@@ -1,109 +1,116 @@
 <!doctype html>
 <html lang="de">
 <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; connect-src https:; script-src 'self' https://esm.sh; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; font-src 'self'; media-src https: data:;">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- WICHTIG: CSP inkl. media-src, damit MP4 von IPFS lädt -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https:;
+                 connect-src https:;
+                 script-src 'self' https://esm.sh;
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' https: data:;
+                 font-src 'self';
+                 media-src https: data:;">
+  <title>Pi Pyramid — Free Mint | Inpinity.online</title>
 
-    <title>Pi Pyramid — Free Mint | Inpinity.online</title>
+  <meta name="description" content="Offizieller Free Mint der Pi Pyramid. 10.000 NFTs (#0–#9999). Royalties 7 %, Creator 100 %." />
+  <meta property="og:title" content="Pi Pyramid — Free Mint | Inpinity.online" />
+  <meta property="og:description" content="Kostenloser Mint für 10.000 NFTs (#0–#9999)." />
+  <meta property="og:image" content="https://ipfs.io/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
 
-    <meta name="description" content="Offizieller Free Mint der Pi Pyramid. 10.000 NFTs (#0–#9999). Royalties 7 %, Creator 100 %." />
-    <meta property="og:title" content="Pi Pyramid — Free Mint | Inpinity.online" />
-    <meta property="og:description" content="Kostenloser Mint für 10.000 NFTs (#0–#9999)." />
-    <meta property="og:image" content="https://ipfs.io/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
-
-    <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-    <div id="fatal"></div>
+  <div id="fatal"></div>
 
-    <header class="topbar">
-        <div class="brand">
-            <div class="logo" aria-hidden="true">π</div>
-            <div>
-                <h1>Pi Pyramid</h1>
-                <p class="sub">Offizieller Free Mint · Inpinity.online</p>
-            </div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">π</div>
+      <div>
+        <h1>Pi Pyramid</h1>
+        <p class="sub">Offizieller Free Mint · Inpinity.online</p>
+      </div>
+    </div>
+    <div class="wallet-connect">
+      <button id="connectBtn" class="btn btn-ghost">Wallet verbinden</button>
+      <div id="walletMenu" class="wallet-menu">
+        <button class="wallet-option" data-wallet="phantom">Phantom</button>
+        <button class="wallet-option" data-wallet="backpack">Backpack</button>
+        <button class="wallet-option" data-wallet="solflare">Solflare</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card intro">
+      <p>Insgesamt <b>10.000</b> NFTs (#0–#9999). Kostenloser Mint. On-chain Royalties: <b>7&nbsp;%</b> · Creator: <b>100&nbsp;%</b>.</p>
+      <div class="statusbar">
+        <div><span class="muted">Wallet:</span> <span id="walletLabel" class="muted">nicht verbunden</span></div>
+        <div><span class="muted">Balance:</span> <span id="balanceLabel" class="muted">–</span></div>
+        <div><span class="muted">Geschätzte Kosten:</span> <span id="costLabel" class="muted">≈ 0.012 SOL</span></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h3>Einstellungen</h3>
+        <label class="lbl">Token-Nummer (0–9999)</label>
+        <div class="row">
+          <input id="tokenId" type="number" min="0" max="9999" value="0" class="inpt inpt-num" />
+          <button id="randBtn" class="btn">Zufällige freie ID</button>
         </div>
-        <div class="wallet-connect">
-            <button id="connectBtn" class="btn btn-ghost">Wallet verbinden</button>
-            <div id="walletMenu" class="wallet-menu">
-                <button class="wallet-option" data-wallet="phantom">Phantom</button>
-                <button class="wallet-option" data-wallet="backpack">Backpack</button>
-                <button class="wallet-option" data-wallet="solflare">Solflare</button>
-            </div>
+        <p class="muted">frei: <span id="freeCounter">–</span></p>
+        <p class="muted">Metadata-URI: <span id="previewUri">–</span><br /><span id="uriStatus" class="muted"></span></p>
+      </div>
+
+      <div class="card">
+        <h3>Optionale Spende an Creator</h3>
+        <div id="donationOptions" class="donos" role="radiogroup">
+          <label class="pill active"><input type="radio" name="donation" value="0" checked /> Keine Spende</label>
+          <label class="pill"><input type="radio" name="donation" value="0.01" /> 0.01 SOL</label>
+          <label class="pill"><input type="radio" name="donation" value="0.1" /> 0.1 SOL</label>
+          <label class="pill"><input type="radio" name="donation" value="1" /> 1 SOL</label>
+          <label class="pill"><input type="radio" name="donation" value="custom" /> Eigener Betrag</label>
         </div>
-    </header>
+        <div id="customDonationContainer" class="custom">
+          <input type="number" id="customDonationInput" min="0" step="0.01" placeholder="SOL Betrag" class="inpt" />
+        </div>
+        <p class="muted">Deine Spende unterstützt den Creator direkt.</p>
+      </div>
+    </section>
 
-    <main class="container">
-        <section class="card intro">
-            <p>Insgesamt <b>10.000</b> NFTs (#0–#9999). Kostenloser Mint. On-chain Royalties: <b>7&nbsp;%</b> · Creator: <b>100&nbsp;%</b>.</p>
-            <div class="statusbar">
-                <div><span class="muted">Wallet:</span> <span id="walletLabel" class="muted">nicht verbunden</span></div>
-                <div><span class="muted">Balance:</span> <span id="balanceLabel" class="muted">–</span></div>
-                <div><span class="muted">Geschätzte Kosten:</span> <span id="costLabel" class="muted">≈ 0.012 SOL</span></div>
-            </div>
-        </section>
+    <section class="card preview">
+      <h3>Vorschau</h3>
+      <div id="mediaBox" class="mediaBox muted">Keine Vorschau geladen.</div>
+      <div id="metaBox" class="metaBox"></div>
+    </section>
 
-        <section class="grid">
-            <div class="card">
-                <h3>Einstellungen</h3>
-                <label class="lbl">Token-Nummer (0–9999)</label>
-                <div class="row">
-                    <input id="tokenId" type="number" min="0" max="9999" value="0" class="inpt inpt-num" />
-                    <button id="randBtn" class="btn">Zufällige freie ID</button>
-                </div>
-                <p class="muted">frei: <span id="freeCounter">–</span></p>
-                <p class="muted">Metadata-URI: <span id="previewUri">–</span><br /><span id="uriStatus" class="muted"></span></p>
-            </div>
+    <section class="card action">
+      <button id="mintBtn" class="btn btn-primary" disabled>
+        <span class="btn-label">Jetzt kostenlos minten</span>
+        <span class="spinner" hidden></span>
+      </button>
+      <p id="status" class="status"></p>
+      <p class="hint">Nach Klick wirst du im Wallet zum Signieren aufgefordert.</p>
+    </section>
 
-            <div class="card">
-                <h3>Optionale Spende an Creator</h3>
-                <div id="donationOptions" class="donos" role="radiogroup">
-                    <label class="pill active"><input type="radio" name="donation" value="0" checked /> Keine Spende</label>
-                    <label class="pill"><input type="radio" name="donation" value="0.01" /> 0.01 SOL</label>
-                    <label class="pill"><input type="radio" name="donation" value="0.1" /> 0.1 SOL</label>
-                    <label class="pill"><input type="radio" name="donation" value="1" /> 1 SOL</label>
-                    <label class="pill"><input type="radio" name="donation" value="custom" /> Eigener Betrag</label>
-                </div>
-                <div id="customDonationContainer" class="custom">
-                    <input type="number" id="customDonationInput" min="0" step="0.01" placeholder="SOL Betrag" class="inpt" />
-                </div>
-                <p class="muted">Deine Spende unterstützt den Creator direkt.</p>
-            </div>
-        </section>
+    <section class="card logs-card">
+      <div class="logs-header">
+        <h3>Logs</h3>
+        <button id="toggleLogs" class="btn btn-ghost">Anzeigen</button>
+      </div>
+      <pre id="log" class="log hidden"></pre>
+    </section>
+  </main>
 
-        <section class="card preview">
-            <h3>Vorschau</h3>
-            <div id="mediaBox" class="mediaBox muted">Keine Vorschau geladen.</div>
-            <div id="metaBox" class="metaBox"></div>
-        </section>
+  <footer class="foot">
+    <span>© Inpinity.online</span>
+    <a href="https://solscan.io/address/DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS" target="_blank" rel="noopener">Collection auf Solscan</a>
+  </footer>
 
-        <section class="card action">
-            <button id="mintBtn" class="btn btn-primary" disabled>
-                <span class="btn-label">Jetzt kostenlos minten</span>
-                <span class="spinner" hidden></span>
-            </button>
-            <p id="status" class="status"></p>
-            <p class="hint">Nach Klick wirst du im Wallet zum Signieren aufgefordert.</p>
-        </section>
-
-        <section class="card logs-card">
-            <div class="logs-header">
-                <h3>Logs</h3>
-                <button id="toggleLogs" class="btn btn-ghost">Anzeigen</button>
-            </div>
-            <pre id="log" class="log hidden"></pre>
-        </section>
-    </main>
-
-    <footer class="foot">
-        <span>© Inpinity.online</span>
-        <a href="https://solscan.io/address/DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS" target="_blank" rel="noopener">Collection auf Solscan</a>
-    </footer>
-
-    <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
