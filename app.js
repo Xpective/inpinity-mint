@@ -6,32 +6,30 @@ const CFG = {
     "https://rpc.ankr.com/solana"
   ],
   currentRPC: 0,
-
   TREASURY: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   CREATOR:  "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
+  ROYALTY_BPS: 700,
+  MAX_INDEX: 9999,
 
-  ROYALTY_BPS: 700,              // 7%
-  MAX_INDEX: 9999,               // 0..9999
+  // Deine CIDs
+  JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
+  COLLECTION_CID: "bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a",
+  MP4_BASE_CID: "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",
+  PNG_BASE_CID: "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
 
-  // DEINE CIDs
-  JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu", // 0-9999.json
-  COLLECTION_CID: "bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a", // (nur falls gebraucht)
-  MP4_BASE_CID: "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",  // optionaler Fallback
-  PNG_BASE_CID: "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",  // optionaler Fallback
-
-  // Gateways (Reihenfolge = Priorität)
+  // Gateways: ipfs.io zuerst (Cloudflare ans Ende)
   GATEWAYS: [
-    "https://cloudflare-ipfs.com/ipfs",
     "https://ipfs.io/ipfs",
-    "https://dweb.link/ipfs"
+    "https://dweb.link/ipfs",
+    "https://cloudflare-ipfs.com/ipfs"
   ],
 
-  BASE_ESTIMATED_COST: 0.003,    // grobe Schätzung
-  TOKEN_STANDARD: 4              // Metaplex Token Standard (NFT)
+  BASE_ESTIMATED_COST: 0.003,
+  TOKEN_STANDARD: 4
 };
 
-/* ========= IMPORTS (ESM) ========= */
+/* ========= IMPORTS ========= */
 import { createUmi } from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
 import { publicKey as umiPk, generateSigner, transactionBuilder, lamports, base58, some } from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
@@ -53,16 +51,11 @@ const setSpin = (on) => { const sp=document.querySelector(".spinner"); const lbl
 
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
-const toHttp = (urlOrPath) => {
-  if (!urlOrPath) return urlOrPath;
-  if (urlOrPath.startsWith("ipfs://")) {
-    const p = urlOrPath.replace("ipfs://", "").replace(/^ipfs\//, "");
-    return `${CFG.GATEWAYS[0]}/${p}`;
-  }
-  if (urlOrPath.startsWith("/ipfs/")) {
-    return `${CFG.GATEWAYS[0]}${urlOrPath}`;
-  }
-  return urlOrPath;
+const toHttp = (u) => {
+  if (!u) return u;
+  if (u.startsWith("ipfs://")) return `${CFG.GATEWAYS[0]}/${u.replace("ipfs://","").replace(/^ipfs\//,"")}`;
+  if (u.startsWith("/ipfs/"))  return `${CFG.GATEWAYS[0]}${u}`;
+  return u;
 };
 
 /* ========= SPENDE ========= */
@@ -72,7 +65,7 @@ function getSelectedDonation() {
   if (sel.value === 'custom') {
     const v = parseFloat($("customDonationInput").value);
     return isNaN(v) ? 0 : v;
-    }
+  }
   return parseFloat(sel.value);
 }
 function updateEstimatedCost() {
@@ -82,7 +75,6 @@ function updateEstimatedCost() {
 
 /* ========= WALLET ========= */
 let umi = null;
-let currentAdapter = null;
 let originalText = "";
 
 async function connectWallet(walletType) {
@@ -94,8 +86,6 @@ async function connectWallet(walletType) {
     if (!adapter) throw new Error(`${walletType} nicht verfügbar (Extension installieren)`);
 
     const resp = await adapter.connect();
-    currentAdapter = adapter;
-
     const pk58 = resp.publicKey.toString();
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
     $("connectBtn").textContent  = walletType[0].toUpperCase()+walletType.slice(1);
@@ -128,8 +118,8 @@ let availableIds = [];
 
 async function loadClaims() {
   try {
-    // Optional: Falls du eine claims.json hättest – aktuell leer lassen
-    claimedSet = new Set(); // solange keine Claims veröffentlicht sind
+    // (Optional) Wenn du später eine claims.json hast, hier laden.
+    claimedSet = new Set();
   } catch (e) {
     claimedSet = new Set();
     log(`claims nicht geladen: ${e?.message || e}`);
@@ -184,7 +174,7 @@ async function updatePreview() {
     } catch {}
   }
 
-  // Falls JSON kein image/animation_url enthält: baue Fallbacks aus deinen CIDs
+  // Fallbacks aus deinen CIDs
   if (meta && !meta.image)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
@@ -201,7 +191,6 @@ async function updatePreview() {
 function renderPreview(id, meta) {
   $("uriStatus").textContent = "✅ Metadaten geladen";
 
-  // Checks
   const errs = [];
   if (!meta.name) errs.push("Name fehlt");
   if (!meta.image && !meta.animation_url) errs.push("Medien fehlen");
@@ -210,13 +199,11 @@ function renderPreview(id, meta) {
   }
   if (errs.length) $("uriStatus").textContent += ` ⚠️ ${errs.join(", ")}`;
 
-  // Medien (ipfs:// → https)
   const media = $("mediaBox");
   const mediaUrl = toHttp(meta.animation_url || meta.image);
   if (meta.animation_url) media.innerHTML = `<video src="${mediaUrl}" controls autoplay loop muted playsinline></video>`;
   else                    media.innerHTML = `<img src="${toHttp(meta.image)}" alt="Preview ${id}" />`;
 
-  // Metadaten
   const metaBox = $("metaBox");
   const dl = document.createElement("dl");
   const add = (k,v)=>{ const dt=document.createElement("dt");dt.textContent=k; const dd=document.createElement("dd");dd.textContent=v; dl.append(dt,dd); };
@@ -261,7 +248,7 @@ async function doMint() {
 
     let builder = transactionBuilder()
       .add(setComputeUnitLimit(umi, { units: 400_000 }))
-      .add(setComputeUnitPrice(umi, { microLamports: 5_000 })); // kleine Priority Fee
+      .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
     if (donationLamports > 0) {
       builder = builder.add(transferSol(umi, {
@@ -294,11 +281,9 @@ async function doMint() {
     setStatus("Bitte im Wallet signieren…", "");
     log("Sende Transaktion…");
 
-    // Senden + bestätigen (mit RPC-Fallback)
     let result;
     for (let i = 0; i < CFG.RPCs.length; i++) {
       try {
-        // nur RPC tauschen – Identity bleibt (bereits gesetzt)
         umi.rpc = createUmi(CFG.RPCs[i]).rpc;
         result = await builder.sendAndConfirm(umi);
         break;
@@ -337,7 +322,6 @@ function handleError(context, e) {
 }
 
 /* ========= UI ========= */
-/* ========= UI ========= */
 function wireUI() {
   // Wallet-Dropdown
   $("connectBtn")?.addEventListener("click", () => {
@@ -359,12 +343,11 @@ function wireUI() {
     $("toggleLogs").textContent = el.classList.contains("hidden") ? "Anzeigen" : "Ausblenden";
   });
 
-  // ===== Spenden-Pills: Active-Style + Radio setzen =====
+  // Spenden-Pills: Active-Style + Radio setzen
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer = $("customDonationContainer");
   const customInput = $("customDonationInput");
 
-  // Hilfsfunktion: visuelle Auswahl + Custom-Container
   const applyDonationSelection = () => {
     pills.forEach(p => p.classList.remove("active"));
     const checked = document.querySelector('#donationOptions input[name="donation"]:checked');
@@ -376,7 +359,6 @@ function wireUI() {
     updateEstimatedCost();
   };
 
-  // Klick auf Pill -> zugehöriges Radio aktivieren
   pills.forEach(pill => {
     pill.addEventListener("click", () => {
       const radio = pill.querySelector('input[name="donation"]');
@@ -386,45 +368,15 @@ function wireUI() {
     });
   });
 
-  // Falls jemand direkt aufs Radio klickt oder per Tastatur navigiert
   document.querySelectorAll('#donationOptions input[name="donation"]').forEach(radio => {
     radio.addEventListener("change", applyDonationSelection);
   });
 
-  // Custom-Betrag tippen -> Kosten live updaten
   customInput?.addEventListener("input", updateEstimatedCost);
 
-  // Initialen Zustand anwenden
   applyDonationSelection();
   updateEstimatedCost();
 }
-
-async function updateBalance() {
-  if (!umi) return;
-  try {
-    const bal = await umi.rpc.getBalance(umi.identity.publicKey);
-    const sol = Number(bal.basisPoints) / 1e9;
-    $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
-
-    const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
-    if (sol < total * 1.2) {
-      $("balanceLabel").classList.add("low-balance");
-      setStatus(`⚠️ Niedriges Guthaben (${sol.toFixed(4)} SOL)`, "warn");
-    } else {
-      $("balanceLabel").classList.remove("low-balance");
-    }
-  } catch (e) {
-    log("balance error", e);
-  }
-}
-
-/* ========= START ========= */
-document.addEventListener("DOMContentLoaded", async () => {
-  wireUI();
-  await loadClaims();
-  await updatePreview();
-});
-
 
 async function updateBalance() {
   if (!umi) return;

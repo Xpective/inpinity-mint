@@ -19,7 +19,7 @@
   <meta name="description" content="Offizieller Free Mint der Pi Pyramid. 10.000 NFTs (#0–#9999). Royalties 7 %, Creator 100 %." />
   <meta property="og:title" content="Pi Pyramid — Free Mint | Inpinity.online" />
   <meta property="og:description" content="Kostenloser Mint für 10.000 NFTs (#0–#9999)." />
-  <meta property="og:image" content="https://cloudflare-ipfs.com/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
+  <meta property="og:image" content="https://ipfs.io/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
 
@@ -37,11 +37,11 @@
       </div>
     </div>
     <div class="wallet-connect">
-      <button id="connectBtn" class="btn btn-ghost">Wallet verbinden</button>
-      <div id="walletMenu" class="wallet-menu">
-        <button class="wallet-option" data-wallet="phantom">Phantom</button>
-        <button class="wallet-option" data-wallet="backpack">Backpack</button>
-        <button class="wallet-option" data-wallet="solflare">Solflare</button>
+      <button id="connectBtn" class="btn btn-ghost" aria-haspopup="true" aria-expanded="false">Wallet verbinden</button>
+      <div id="walletMenu" class="wallet-menu" role="menu" aria-label="Wallet Auswahl">
+        <button class="wallet-option" data-wallet="phantom" role="menuitem">Phantom</button>
+        <button class="wallet-option" data-wallet="backpack" role="menuitem">Backpack</button>
+        <button class="wallet-option" data-wallet="solflare" role="menuitem">Solflare</button>
       </div>
     </div>
   </header>
@@ -59,10 +59,10 @@
     <section class="grid">
       <div class="card">
         <h3>NFT Auswahl</h3>
-        <label class="lbl">Token-Nummer (0–9999)</label>
+        <label class="lbl" for="tokenId">Token-Nummer (0–9999)</label>
         <div class="row">
           <input id="tokenId" type="number" min="0" max="9999" value="0" class="inpt inpt-num" />
-          <button id="randBtn" class="btn">Zufällige freie ID</button>
+          <button id="randBtn" class="btn" type="button">Zufällige freie ID</button>
         </div>
         <p class="muted">frei: <span id="freeCounter">–</span></p>
         <p class="muted">Metadata-URI: <span id="previewUri">–</span></p>
@@ -71,7 +71,7 @@
 
       <div class="card">
         <h3>Optionale Spende an Creator</h3>
-        <div id="donationOptions" class="donos" role="radiogroup">
+        <div id="donationOptions" class="donos" role="radiogroup" aria-label="Spendenhöhe">
           <label class="pill active"><input type="radio" name="donation" value="0" checked /> Keine Spende</label>
           <label class="pill"><input type="radio" name="donation" value="0.01" /> 0.01 SOL</label>
           <label class="pill"><input type="radio" name="donation" value="0.1" /> 0.1 SOL</label>
@@ -79,7 +79,8 @@
           <label class="pill"><input type="radio" name="donation" value="custom" /> Eigener Betrag</label>
         </div>
         <div id="customDonationContainer" class="custom">
-          <input type="number" id="customDonationInput" min="0" step="0.01" placeholder="SOL Betrag" class="inpt" />
+          <label class="lbl" for="customDonationInput">Eigener Betrag (SOL)</label>
+          <input type="number" id="customDonationInput" min="0" step="0.01" placeholder="z. B. 0.05" class="inpt" />
         </div>
         <p class="muted">Deine Spende unterstützt den Creator direkt.</p>
       </div>
@@ -92,7 +93,7 @@
     </section>
 
     <section class="card action">
-      <button id="mintBtn" class="btn btn-primary" disabled>
+      <button id="mintBtn" class="btn btn-primary" type="button" disabled>
         <span class="btn-label">Jetzt kostenlos minten</span>
         <span class="spinner" hidden></span>
       </button>
@@ -103,9 +104,9 @@
     <section class="card logs-card">
       <div class="logs-header">
         <h3>Logs</h3>
-        <button id="toggleLogs" class="btn btn-ghost">Anzeigen</button>
+        <button id="toggleLogs" class="btn btn-ghost" type="button">Anzeigen</button>
       </div>
-      <pre id="log" class="log hidden"></pre>
+      <pre id="log" class="log hidden" aria-live="polite"></pre>
     </section>
   </main>
 
@@ -114,6 +115,7 @@
     <a href="https://solscan.io/address/DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS" target="_blank" rel="noopener">Collection auf Solscan</a>
   </footer>
 
+  <!-- Dein App-Code (ESM) -->
   <script type="module" src="./app.js"></script>
 </body>
 </html>
