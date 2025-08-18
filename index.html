@@ -4,19 +4,19 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
 
-  <!-- CSP erlaubt esm.sh + dein IPFS-Gateway -->
+  <!-- CSP: erlaubt esm.sh und eval im Bundle (erforderlich für einige ESM-Shims) -->
   <meta http-equiv="Content-Security-Policy"
-        content="
-          default-src 'self' https:;
-          connect-src https: wss:;
-          script-src 'self' https://esm.sh;
-          style-src 'self' 'unsafe-inline';
-          img-src 'self' https: data: ipfs:;
-          font-src 'self';
-          media-src https: data: ipfs: blob:;
-        ">
+        content="default-src 'self' https:;
+                 connect-src https: wss:;
+                 script-src 'self' https://esm.sh 'unsafe-eval';
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' https: data: ipfs:;
+                 font-src 'self' https:;
+                 media-src https: data: ipfs: blob:;
+                 worker-src 'self' blob:;">
 
   <title>Pi Pyramid — Free Mint | Inpinity.online</title>
+
   <meta name="description" content="Offizieller Free Mint der Pi Pyramid. 10.000 NFTs (#0–#9999). Royalties 7 %, Creator 100 %." />
   <meta property="og:title" content="Pi Pyramid — Free Mint | Inpinity.online" />
   <meta property="og:description" content="Kostenloser Mint für 10.000 NFTs (#0–#9999)." />
@@ -24,13 +24,10 @@
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
 
-  <link rel="preconnect" href="https://esm.sh" />
-  <link rel="preconnect" href="https://ipfs.inpinity.online" />
-
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div id="fatal"></div>
+  <div id="fatal" role="alert" aria-live="polite"></div>
 
   <header class="topbar">
     <div class="brand">

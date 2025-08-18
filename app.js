@@ -1,31 +1,32 @@
 /* ========= KONFIG ========= */
 const CFG = {
+  // Nur öffentliche, schlüsselfreie Mainnet-RPCs (kein Alchemy)
   RPCs: [
-    // Nur öffentliche, schlüssel-freie Endpoints:
     "https://api.mainnet-beta.solana.com",
     "https://rpc.ankr.com/solana",
     "https://solana.public-rpc.com"
   ],
   currentRPC: 0,
 
-  CREATOR:  "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
+  CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
 
   ROYALTY_BPS: 700,
   MAX_INDEX: 9999,
 
-  // Deine CIDs auf deinem Gateway
+  // Deine CIDs über dein eigenes Gateway
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   MP4_BASE_CID:  "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
 
+  // Dein Gateway zuerst
   GATEWAYS: [
     "https://ipfs.inpinity.online/ipfs",
     "https://ipfs.io/ipfs",
     "https://cloudflare-ipfs.com/ipfs"
   ],
 
-  BASE_ESTIMATED_COST: 0.003, // grobe Schätzung
+  BASE_ESTIMATED_COST: 0.003,
   TOKEN_STANDARD: 4
 };
 
@@ -37,22 +38,18 @@ import {
   mplTokenMetadata,
   createV1,
   mintV1,
-  findMasterEditionPda,
-  findMetadataPda
+  findMasterEditionPda
 } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
 import {
   setComputeUnitLimit,
   setComputeUnitPrice,
   transferSol,
-  findAssociatedTokenPda   // <— RICHTIG: kommt aus mpl-toolbox
+  findAssociatedTokenPda
 } from "https://esm.sh/@metaplex-foundation/mpl-toolbox@0.10.0?bundle";
 
 /* ========= HELPERS ========= */
 const $ = (id) => document.getElementById(id);
-const setStatus = (t, cls = "") => {
-  const el = $("status"); if (!el) return;
-  el.className = `status ${cls}`; el.innerHTML = t;
-};
+const setStatus = (t, cls = "") => { const el = $("status"); if (!el) return; el.className = `status ${cls}`; el.innerHTML = t; };
 const log = (msg, obj) => {
   const el = $("log"); if (!el) return;
   const time = new Date().toLocaleTimeString();
@@ -60,18 +57,16 @@ const log = (msg, obj) => {
   if (obj) console.debug(line, obj);
   el.textContent += line + (obj ? " " + JSON.stringify(obj, null, 2) : "") + "\n";
   el.scrollTop = el.scrollHeight;
-  if (/error|warn|fehler|⚠️/i.test(msg)) {
+  if (/error|warn|fehler|❌|⚠️/i.test(msg)) {
     el.classList.remove("hidden");
-    $("toggleLogs").textContent = "Ausblenden";
+    const t = $("toggleLogs"); if (t) t.textContent = "Ausblenden";
   }
 };
-
 const setSpin = (on) => {
   const sp = document.querySelector(".spinner");
   const lbl = document.querySelector(".btn-label");
   if (!sp || !lbl) return;
-  sp.hidden = !on;
-  lbl.style.opacity = on ? 0.75 : 1;
+  sp.hidden = !on; lbl.style.opacity = on ? 0.75 : 1;
 };
 
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
@@ -83,45 +78,36 @@ const toHttp = (u) => {
   return u;
 };
 
-/* ========= SPENDE ========= */
-function getSelectedDonation() {
-  const sel = document.querySelector('#donationOptions input[name="donation"]:checked');
-  if (!sel) return 0;
-  if (sel.value === 'custom') {
-    const v = parseFloat($("customDonationInput").value);
-    return isNaN(v) ? 0 : v;
-  }
-  return parseFloat(sel.value);
-}
-function updateEstimatedCost() {
-  const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
-  const lbl = $("costLabel"); if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
-}
-
-/* ========= WALLET (PHANTOM ONLY) ========= */
+/* ========= PHANTOM ONLY ========= */
 let umi = null;
+let phantom = null;
 let originalText = "";
+
+function setRpc(index) {
+  CFG.currentRPC = index % CFG.RPCs.length;
+  umi = createUmi(CFG.RPCs[CFG.currentRPC])
+    .use(walletAdapterIdentity(phantom))
+    .use(mplTokenMetadata());
+  log("Aktiver RPC", { rpc: CFG.RPCs[CFG.currentRPC] });
+}
 
 async function connectPhantom() {
   try {
-    const adapter = window.solana?.isPhantom ? window.solana : null;
-    if (!adapter) throw new Error("Phantom nicht gefunden. Bitte Phantom Wallet installieren.");
+    phantom = window.solana?.isPhantom ? window.solana : null;
+    if (!phantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
 
-    const resp = await adapter.connect();
+    const resp = await phantom.connect();
     const pk58 = resp.publicKey.toString();
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
     $("connectBtn").textContent  = "Phantom verbunden";
+    setStatus("Wallet verbunden. Bereit zum Minten.", "ok");
     log("Wallet verbunden", { wallet: "phantom", address: pk58 });
 
-    umi = createUmi(CFG.RPCs[CFG.currentRPC])
-      .use(walletAdapterIdentity(adapter))
-      .use(mplTokenMetadata());
-
+    setRpc(0);
     await updateBalance();
     $("mintBtn").disabled = false;
-    setStatus("Wallet verbunden. Bereit zum Minten.", "ok");
 
-    adapter.on?.("disconnect", () => {
+    phantom.on?.("disconnect", () => {
       log("Wallet getrennt");
       $("walletLabel").textContent = "nicht verbunden";
       $("connectBtn").textContent  = "Mit Phantom verbinden";
@@ -133,10 +119,9 @@ async function connectPhantom() {
   }
 }
 
-/* ========= CLAIMS (optional, aktuell leer) ========= */
+/* ========= CLAIMS ========= */
 let claimedSet = new Set();
 let availableIds = [];
-
 function recomputeAvailable() {
   availableIds = [];
   for (let i = 0; i <= CFG.MAX_INDEX; i++) if (!claimedSet.has(i)) availableIds.push(i);
@@ -145,15 +130,15 @@ function recomputeAvailable() {
 async function isIdAvailable(id) {
   if (claimedSet.has(id)) return false;
   const checks = CFG.GATEWAYS.map(gw =>
-    fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: 'HEAD', cache: 'no-store' })
-      .then(r=>r.ok).catch(()=>false)
+    fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: "HEAD", cache: "no-store" })
+      .then(r => r.ok).catch(() => false)
   );
   return (await Promise.all(checks)).some(Boolean);
 }
 async function pickRandomFreeId() {
   if (availableIds.length === 0) return 0;
-  const shuffled = [...availableIds].sort(()=>Math.random()-0.5);
-  for (const id of shuffled.slice(0,80)) if (await isIdAvailable(id)) return id;
+  const shuffled = [...availableIds].sort(() => Math.random() - 0.5);
+  for (const id of shuffled.slice(0, 80)) if (await isIdAvailable(id)) return id;
   return shuffled[0] || 0;
 }
 async function setRandomFreeId() {
@@ -188,7 +173,6 @@ async function updatePreview() {
     } catch {}
   }
 
-  // Fallbacks (falls dein JSON minimal ist)
   if (meta && !meta.image)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
@@ -227,7 +211,7 @@ function renderPreview(id, meta) {
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
 
-/* ========= MINT (minimal) ========= */
+/* ========= MINT ========= */
 async function doMint() {
   try {
     const mintBtn = $("mintBtn");
@@ -243,7 +227,14 @@ async function doMint() {
     const donation = getSelectedDonation();
     const donationLamports = Math.round(donation * 1e9);
 
-    const bal = await umi.rpc.getBalance(umi.identity.publicKey);
+    // Balance lesen, bei 401/403 -> nächsten RPC
+    let bal;
+    try { bal = await umi.rpc.getBalance(umi.identity.publicKey); }
+    catch (e) {
+      const msg = String(e?.message||e);
+      if (/401|403|unauthorized|forbidden/i.test(msg)) { setRpc(CFG.currentRPC + 1); bal = await umi.rpc.getBalance(umi.identity.publicKey); }
+      else throw e;
+    }
     const sol = Number(bal.basisPoints) / 1e9;
     const need = CFG.BASE_ESTIMATED_COST + donation;
     if (sol < need) throw new Error(`Unzureichendes SOL (~${need.toFixed(3)} SOL benötigt)`);
@@ -255,29 +246,19 @@ async function doMint() {
     const nftName = `Pi Pyramid #${id}`;
     const nftUri  = uriForId(id);
 
-    const collectionMint   = umiPk(CFG.COLLECTION_MINT);
-    const collectionMeta   = findMetadataPda(umi, { mint: collectionMint });
-    const collectionEdition= findMasterEditionPda(umi, { mint: collectionMint });
-
-    // Empfänger-Token-Account (ATA) für den Mintee
-    const tokenAccount = findAssociatedTokenPda(umi, {
-      mint: mint.publicKey,
-      owner: umi.identity.publicKey
-    });
+    const collectionMint    = umiPk(CFG.COLLECTION_MINT);
+    const collectionEdition = findMasterEditionPda(umi, { mint: collectionMint });
+    const tokenAccount = findAssociatedTokenPda(umi, { mint: mint.publicKey, owner: umi.identity.publicKey });
 
     let builder = transactionBuilder()
       .add(setComputeUnitLimit(umi, { units: 350_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
     if (donationLamports > 0) {
-      builder = builder.add(transferSol(umi, {
-        from: umi.identity,
-        to: umiPk(CFG.CREATOR),
-        amount: lamports(donationLamports)
-      }));
+      builder = builder.add(transferSol(umi, { from: umi.identity, to: umiPk(CFG.CREATOR), amount: lamports(donationLamports) }));
     }
 
-    // Erstellen (public, Collection NICHT verifiziert) + Mint 1
+    // Public mint (ohne Collection-Verifizierung)
     builder = builder.add(createV1(umi, {
       mint,
       name: nftName,
@@ -301,15 +282,15 @@ async function doMint() {
     setStatus("Bitte im Wallet signieren…", "info");
     log("Sende Transaktion…");
 
-    // RPC-Fallback
+    // Senden mit RPC-Fallback
     let result;
     for (let i = 0; i < CFG.RPCs.length; i++) {
       try {
-        umi.rpc = createUmi(CFG.RPCs[i]).rpc;
+        umi.rpc = createUmi(CFG.RPCs[(CFG.currentRPC + i) % CFG.RPCs.length]).rpc;
         result = await builder.sendAndConfirm(umi);
         break;
       } catch (e) {
-        log(`RPC Fehler (${CFG.RPCs[i]}): ${e?.message || e}`);
+        log(`RPC Fehler (${CFG.RPCs[(CFG.currentRPC + i)%CFG.RPCs.length]}): ${e?.message||e}`);
         if (i === CFG.RPCs.length - 1) throw e;
       }
     }
@@ -319,8 +300,9 @@ async function doMint() {
     setStatus(`✅ Mint erfolgreich! <a href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
     log("Mint erfolgreich", { signature: txSig });
 
-    claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
-
+    claimedSet.add(id);
+    recomputeAvailable();
+    await setRandomFreeId();
   } catch (e) {
     handleError("Mint fehlgeschlagen:", e);
   } finally {
@@ -336,17 +318,30 @@ function handleError(context, e) {
   let user = msg;
   if (/user rejected|reject/i.test(msg)) user = "Signierung abgebrochen";
   else if (/insufficient funds/i.test(msg)) user = "Unzureichendes SOL-Guthaben";
+  else if (/401|403|unauthorized|forbidden/i.test(msg)) user = "RPC verweigert (öffentlichen RPC wechseln und erneut versuchen)";
   setStatus(`❌ ${user}`, "err");
   log(`${context} ${msg}`);
 }
 
-/* ========= UI ========= */
+/* ========= UI & START ========= */
+function getSelectedDonation() {
+  const sel = document.querySelector('#donationOptions input[name="donation"]:checked');
+  if (!sel) return 0;
+  if (sel.value === "custom") {
+    const v = parseFloat($("customDonationInput").value);
+    return isNaN(v) ? 0 : v;
+  }
+  return parseFloat(sel.value);
+}
+function updateEstimatedCost() {
+  const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
+  const lbl = $("costLabel"); if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
+}
 function wireUI() {
   $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
   $("randBtn")?.addEventListener("click", setRandomFreeId);
   $("tokenId")?.addEventListener("input", updatePreview);
-
   $("toggleLogs")?.addEventListener("click", () => {
     const el = $("log");
     el.classList.toggle("hidden");
@@ -357,35 +352,24 @@ function wireUI() {
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer = $("customDonationContainer");
   const customInput = $("customDonationInput");
-
   const applyDonationSelection = () => {
     pills.forEach(p => p.classList.remove("active"));
     const checked = document.querySelector('#donationOptions input[name="donation"]:checked');
     if (!checked) return;
-    const pill = checked.closest(".pill");
-    if (pill) pill.classList.add("active");
+    const pill = checked.closest(".pill"); if (pill) pill.classList.add("active");
     if (checked.value === "custom") customContainer.classList.add("visible");
     else customContainer.classList.remove("visible");
     updateEstimatedCost();
   };
-
-  pills.forEach(pill => {
-    pill.addEventListener("click", () => {
-      const radio = pill.querySelector('input[name="donation"]');
-      if (!radio) return;
-      radio.checked = true;
-      applyDonationSelection();
-    });
-  });
-
+  pills.forEach(pill => pill.addEventListener("click", () => {
+    const radio = pill.querySelector('input[name="donation"]'); if (!radio) return;
+    radio.checked = true; applyDonationSelection();
+  }));
   document.querySelectorAll('#donationOptions input[name="donation"]').forEach(radio => {
     radio.addEventListener("change", applyDonationSelection);
   });
-
   customInput?.addEventListener("input", updateEstimatedCost);
-
-  applyDonationSelection();
-  updateEstimatedCost();
+  applyDonationSelection(); updateEstimatedCost();
 }
 
 async function updateBalance() {
@@ -394,7 +378,6 @@ async function updateBalance() {
     const bal = await umi.rpc.getBalance(umi.identity.publicKey);
     const sol = Number(bal.basisPoints) / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
-
     const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
     if (sol < total * 1.2) {
       $("balanceLabel").classList.add("low-balance");
@@ -403,15 +386,15 @@ async function updateBalance() {
       $("balanceLabel").classList.remove("low-balance");
     }
   } catch (e) {
-    log("Balance Fehler", e);
+    const msg = String(e?.message || e);
+    log("Balance Fehler", msg);
+    if (/401|403|unauthorized|forbidden/i.test(msg)) { setRpc(CFG.currentRPC + 1); await updateBalance(); }
   }
 }
 
-/* ========= START ========= */
 document.addEventListener("DOMContentLoaded", async () => {
-  recomputeAvailable();   // (claims aktuell leer)
+  recomputeAvailable();
   wireUI();
   await updatePreview();
-
-  // Hinweis: Andere Browser-Wallets (EVM) können Konsolenwarnungen loggen; die sind hier irrelevant.
+  log("Verfügbare RPCs", { list: CFG.RPCs });
 });
