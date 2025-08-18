@@ -11,46 +11,155 @@
   <meta property="og:image" content="https://ipfs.io/ipfs/bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a/0.png" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
-<link rel="stylesheet" href="./styles.css?v=2" />
 
   <style>
-    :root { --b:#0a0a0a; --t:#111; --g:#eee; --m:#666; }
-    *{box-sizing:border-box}
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fff;color:#111}
-    header{padding:20px}
-    header h1{margin:0 0 6px}
-    .wrap{padding:16px;display:grid;gap:16px;max-width:1100px;margin:0 auto}
-    .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    .pill{border:1px solid #222;border-radius:999px;padding:6px 10px;display:flex;gap:8px;align-items:center;cursor:pointer}
-    .pill.active{background:#111;color:#fff}
-    .muted{color:#666}
-    .grid{display:grid;grid-template-columns:420px 1fr;gap:16px}
-    @media (max-width:1000px){.grid{grid-template-columns:1fr}}
-    .card{border:1px solid #e3e3e3;border-radius:12px;overflow:hidden}
-    .card .body{padding:12px}
-    .media{display:flex;align-items:center;justify-content:center;min-height:260px;background:#f8f8f8}
-    .media img,.media video{max-width:100%;max-height:420px;display:block}
-    dl{display:grid;grid-template-columns:120px 1fr;gap:8px;margin:0}
-    dt{font-weight:600}
-    dd{margin:0}
-    button{padding:11px 14px;border:1px solid #111;border-radius:10px;background:#fff;cursor:pointer}
-    button[disabled]{opacity:0.6;cursor:not-allowed}
-    .primary{background:#111;color:#fff}
-    .status{min-height:1.4em}
-    .status.ok{color:#0a7a0a}
-    .status.warn{color:#b37c00}
-    .status.err{color:#b00020}
-    .spinner{width:16px;height:16px;border:2px solid #ddd;border-top-color:#111;border-radius:50%;animation:sp 1s linear infinite}
-    @keyframes sp{to{transform:rotate(360deg)}}
-    .foot{color:#666;font-size:12px}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .log{white-space:pre-wrap;background:#0f0f0f;color:#cfcfcf;padding:8px;border-radius:8px;max-height:180px;overflow:auto}
-    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    input[type="number"], input[type="text"]{padding:9px;border:1px solid #ccc;border-radius:8px;width:120px}
-    .btn-label{display:inline-block;min-width:7.5em;text-align:center}
-    .inline{display:inline-flex;gap:8px;align-items:center}
-    .small{font-size:12px}
-    .link{color:#0b6; text-decoration:none}
+    :root {
+      --bg: #0d0d0d;
+      --bg-card: #1a1a1a;
+      --text: #f0f0f0;
+      --muted: #888;
+      --primary: #0b6;
+      --primary-dark: #094;
+      --border: #333;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 20px;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 {
+      margin: 0 0 6px;
+      font-size: 2rem;
+      color: var(--primary);
+    }
+    .muted { color: var(--muted); }
+    .wrap {
+      padding: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+      display: grid;
+      gap: 20px;
+    }
+    .bar, .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 14px;
+      cursor: pointer;
+      background: transparent;
+      transition: all 0.2s;
+    }
+    .pill:hover { background: #222; }
+    .pill.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary-dark);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+    .card .body { padding: 16px; }
+    .media {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 260px;
+      background: #111;
+    }
+    .media img, .media video { max-width: 100%; max-height: 420px; }
+    dl {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px;
+      margin: 0;
+    }
+    dt { font-weight: 600; }
+    dd { margin: 0; }
+    button {
+      padding: 11px 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: #222;
+      color: var(--text);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover:not([disabled]) { background: #333; }
+    button.primary {
+      background: var(--primary);
+      border-color: var(--primary-dark);
+      color: #fff;
+      font-weight: 600;
+    }
+    button.primary:hover:not([disabled]) { background: var(--primary-dark); }
+    button[disabled] { opacity: 0.6; cursor: not-allowed; }
+    .status { min-height: 1.4em; }
+    .status.ok { color: #0f0; }
+    .status.warn { color: #ffb400; }
+    .status.err { color: #f33; }
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid #444;
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .foot {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      margin-top: 20px;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .log {
+      white-space: pre-wrap;
+      background: #111;
+      color: #ccc;
+      padding: 10px;
+      border-radius: var(--radius);
+      max-height: 180px;
+      overflow: auto;
+      font-size: 12px;
+    }
+    input[type="number"], input[type="text"] {
+      padding: 9px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: #111;
+      color: var(--text);
+      width: 120px;
+    }
+    .btn-label { min-width: 7.5em; display:inline-block; text-align:center; }
+    .inline { display:inline-flex; gap:8px; align-items:center; }
+    .small { font-size: 12px; }
+    .link { color: var(--primary); text-decoration: none; }
+    .link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -87,9 +196,7 @@
       <div class="card">
         <div class="body">
           <h3>Mint</h3>
-          <p class="small">
-            Fixe Creator-Fee: <strong>0.02 SOL</strong>. Optional kannst du zusätzlich spenden.
-          </p>
+          <p class="small">Fixe Creator-Fee: <strong>0.02 SOL</strong>. Optional kannst du zusätzlich spenden.</p>
 
           <!-- Donation-Auswahl -->
           <div id="donationOptions" class="bar">
@@ -138,6 +245,6 @@
     </div>
   </div>
 
-<script type="module" src="./app.js?v=9"></script>
+  <script type="module" src="./app.js?v=9"></script>
 </body>
 </html>

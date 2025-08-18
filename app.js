@@ -1,16 +1,16 @@
-/* ==================== BUILD-ID (für Cache & Debug) ==================== */
-const BUILD_TAG = "mint-v5";
+/* ==================== BUILD-ID (for cache & debug) ==================== */
+const BUILD_TAG = "mint-v11";
 
-/* ==================== KONFIG ==================== */
+/* ==================== CONFIG ==================== */
 const CFG = {
-  // NUR Worker (primär Domain-Route, Fallback workers.dev)
+  // Prefer workers.dev first, domain route as fallback
   RPCS: [
-    "https://api.inpinity.online/rpc",
-    "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc"
+    "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc",
+    "https://api.inpinity.online/rpc"
   ],
   CLAIMS: [
-    "https://api.inpinity.online/claims",
-    "https://inpinity-rpc-proxy.s-plat.workers.dev/claims"
+    "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
+    "https://api.inpinity.online/claims"
   ],
 
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
@@ -51,16 +51,16 @@ import {
   Connection, PublicKey, VersionedTransaction, TransactionMessage
 } from "https://esm.sh/@solana/web3.js@1.95.3";
 
-/* ==================== FETCH-NOTBREMSE (Rewrite) ==================== */
+/* ==================== FETCH REWRITE (redirect mainnet → worker) ==================== */
 (function installFetchRewrite(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
-  const TARGET  = CFG.RPCS[0]; // dein Worker
+  const TARGET  = CFG.RPCS[0]; // workers.dev first
   const _fetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     try {
       const url = typeof input === "string" ? input : (input?.url || "");
       if (MAINNET.test(url)) {
-        console.warn("[rewrite] redirect mainnet-beta → worker", { from: url, to: TARGET });
+        console.warn("[rewrite] mainnet-beta → worker", { from: url, to: TARGET });
         return _fetch(TARGET, init);
       }
     } catch {}
@@ -95,7 +95,7 @@ const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.
 /* ==================== STATE ==================== */
 let umi = null;
 let phantom = null;
-let rpcConn = null; // Connection über Worker
+let rpcConn = null; // web3.js Connection via worker
 let originalBtnText = "";
 let claimedSet = new Set();
 let availableIds = [];
@@ -118,11 +118,11 @@ async function ensureConnection() {
   if (rpcConn) return rpcConn;
   const chosen = await pickRpcEndpoint();
   rpcConn = new Connection(chosen, { commitment: "confirmed" });
-  log("RPC aktiv", { rpc: chosen, build: BUILD_TAG });
+  log("RPC ready", { rpc: chosen, build: BUILD_TAG });
   return rpcConn;
 }
 
-/* ==================== UI: Spenden ==================== */
+/* ==================== UI: Donation ==================== */
 function getSelectedDonation() {
   const sel = document.querySelector('#donationOptions input[name="donation"]:checked');
   if (!sel) return 0;
@@ -141,61 +141,59 @@ function updateEstimatedCost() {
 async function connectPhantom() {
   try {
     const w = window.solana;
-    if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
+    if (!w?.isPhantom) throw new Error("Phantom not found. Please install Phantom.");
 
-    const resp = await w.connect(); // Popup
+    const resp = await w.connect(); // popup
     phantom = w;
 
-    // UMI auf deinen Worker
+    // UMI against our worker RPC
     umi = createUmiDefaults(CFG.RPCS[0]).use(walletAdapterIdentity(phantom)).use(mplTokenMetadata());
 
-    // web3 Connection über Worker initialisieren
+    // web3 Connection via worker
     await ensureConnection();
 
     const pk58 = resp.publicKey.toString();
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
-    $("connectBtn").textContent  = "Phantom verbunden";
+    $("connectBtn").textContent  = "Phantom connected";
     $("mintBtn").disabled = false;
-    setStatus(`Wallet verbunden (${BUILD_TAG}). Bereit zum Minten.`, "ok");
-    log("Wallet verbunden", { address: pk58 });
+    setStatus(`Wallet connected (${BUILD_TAG}). Ready to mint.`, "ok");
+    log("Wallet connected", { address: pk58 });
 
     await updateBalance();
 
     phantom.on?.("disconnect", () => {
-      $("walletLabel").textContent = "nicht verbunden";
-      $("connectBtn").textContent  = "Mit Phantom verbinden";
+      $("walletLabel").textContent = "not connected";
+      $("connectBtn").textContent  = "Connect Phantom";
       $("mintBtn").disabled = true;
-      setStatus("Wallet getrennt. Bitte erneut verbinden.", "warn");
+      setStatus("Wallet disconnected. Please reconnect.", "warn");
     });
   } catch (e) {
-    handleError("Wallet-Verbindung fehlgeschlagen:", e);
+    handleError("Wallet connection failed:", e);
   }
 }
 
 async function updateBalance() {
   if (!phantom?.publicKey) return;
   try {
-    const conn = await ensureConnection();         // ← Worker-Connection!
+    const conn = await ensureConnection();
     const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString()));
     const sol = lam / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
   } catch (e) {
     $("balanceLabel").textContent = "—";
-    log("Balance nicht abrufbar (RPC).", String(e?.message||e));
+    log("Balance not available (RPC).", String(e?.message||e));
   }
 }
 
 /* ==================== CLAIMS (Worker) ==================== */
-function claimsUrl() { return CFG.CLAIMS[0] || CFG.CLAIMS[1]; }
-
 async function fetchClaims() {
   for (const url of CFG.CLAIMS) {
     try {
       const r = await fetch(url, { cache: "no-store" });
       if (!r.ok) continue;
-      const j = await r.json();
-      const arr = Array.isArray(j) ? j : Array.isArray(j.claimed) ? j.claimed : j.claimed ?? [];
-      return arr;
+      const j = await r.json().catch(()=>null);
+      const arr = Array.isArray(j) ? j : Array.isArray(j?.claimed) ? j.claimed : [];
+      if (Array.isArray(arr)) return arr;
     } catch {}
   }
   return [];
@@ -231,7 +229,7 @@ async function pickRandomFreeId() {
 }
 async function setRandomFreeId() {
   const inp = $("tokenId"); if (!inp) return;
-  setStatus("Suche freie ID...", "info");
+  setStatus("Searching free ID…", "info");
   const id = await pickRandomFreeId();
   inp.value = String(id);
   await updatePreview();
@@ -242,11 +240,11 @@ const previewCache = {};
 async function updatePreview() {
   const id = Number($("tokenId").value || 0);
   $("previewUri").textContent = uriForId(id);
-  $("uriStatus").textContent  = "prüfe URI …";
+  $("uriStatus").textContent  = "checking URI…";
 
   const media = $("mediaBox");
   const metaBox = $("metaBox");
-  media.innerHTML = '<span class="muted">Lade Vorschau…</span>';
+  media.innerHTML = '<span class="muted">Loading preview…</span>';
   metaBox.innerHTML = "";
 
   if (previewCache[id]) { renderPreview(id, previewCache[id]); return; }
@@ -265,7 +263,7 @@ async function updatePreview() {
   if (meta && !meta.animation_url && CFG.MP4_BASE_CID) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
   if (!meta) {
-    $("uriStatus").textContent = "⚠️ Metadaten nicht gefunden";
+    $("uriStatus").textContent = "⚠️ metadata not found";
     media.textContent = "—";
     return;
   }
@@ -274,13 +272,13 @@ async function updatePreview() {
   renderPreview(id, meta);
 }
 function renderPreview(id, meta) {
-  $("uriStatus").textContent = "✅ Metadaten geladen";
+  $("uriStatus").textContent = "✅ metadata loaded";
 
   const errs = [];
-  if (!meta.name) errs.push("Name fehlt");
-  if (!meta.image && !meta.animation_url) errs.push("Medien fehlen");
+  if (!meta.name) errs.push("name missing");
+  if (!meta.image && !meta.animation_url) errs.push("no media");
   if (meta.seller_fee_basis_points !== undefined && meta.seller_fee_basis_points !== CFG.ROYALTY_BPS) {
-    errs.push(`Royalties nicht ${CFG.ROYALTY_BPS / 100}%`);
+    errs.push(`royalties not ${CFG.ROYALTY_BPS / 100}%`);
   }
   if (errs.length) $("uriStatus").textContent += ` ⚠️ ${errs.join(", ")}`;
 
@@ -293,8 +291,8 @@ function renderPreview(id, meta) {
   const dl = document.createElement("dl");
   const add = (k,v)=>{ const dt=document.createElement("dt");dt.textContent=k; const dd=document.createElement("dd");dd.textContent=v; dl.append(dt,dd); };
   add("Name", meta.name || `Pi Pyramid #${id}`);
-  if (meta.description) add("Beschreibung", meta.description);
-  if (Array.isArray(meta.attributes)) add("Attribute", meta.attributes.map(a => `${a.trait_type||'Trait'}: ${a.value}`).join(" · "));
+  if (meta.description) add("Description", meta.description);
+  if (Array.isArray(meta.attributes)) add("Attributes", meta.attributes.map(a => `${a.trait_type||'Trait'}: ${a.value}`).join(" · "));
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
 
@@ -304,22 +302,22 @@ async function doMint() {
     const btn = $("mintBtn");
     btn.disabled = true;
     originalBtnText = btn.querySelector(".btn-label").textContent;
-    btn.querySelector(".btn-label").textContent = "Verarbeite...";
+    btn.querySelector(".btn-label").textContent = "Processing…";
     setSpin(true);
 
-    if (!umi || !phantom?.publicKey) throw new Error("Wallet nicht verbunden");
+    if (!umi || !phantom?.publicKey) throw new Error("Wallet not connected");
     const id = Number($("tokenId").value || 0);
-    if (!Number.isInteger(id) || id < 0 || id > CFG.MAX_INDEX) throw new Error(`Ungültige ID (0–${CFG.MAX_INDEX})`);
+    if (!Number.isInteger(id) || id < 0 || id > CFG.MAX_INDEX) throw new Error(`Invalid ID (0–${CFG.MAX_INDEX})`);
 
     const donation = getSelectedDonation();
     const donationLamports = Math.round(donation * 1e9);
 
     await updateBalance().catch(()=>{});
 
-    setStatus("Baue Transaktion...", "info");
-    log("Starte Mint", { id, donation });
+    setStatus("Building transaction…", "info");
+    log("Start mint", { id, donation });
 
-    // ========== UMI: Instruktionen ==========
+    // ========== UMI: Instructions ==========
     const mint = generateSigner(umi);
     const nftName = `Pi Pyramid #${id}`;
     const nftUri  = uriForId(id);
@@ -331,14 +329,14 @@ async function doMint() {
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
-    // 0) Fixe Creator-Fee 0.02 SOL
+    // 0) fixed creator fee
     builder = builder.add(transferSol(umi, {
       from: umi.identity,
       to: umiPk(CFG.CREATOR),
       amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9))
     }));
 
-    // 0b) Optionale Spende
+    // 0b) optional donation
     if (donationLamports > 0) {
       builder = builder.add(transferSol(umi, {
         from: umi.identity,
@@ -347,7 +345,7 @@ async function doMint() {
       }));
     }
 
-    // 1) NFT anlegen (unverified; später on-chain verifizieren)
+    // 1) create NFT (unverified; verify on-chain later)
     builder = builder.add(createV1(umi, {
       mint,
       name: nftName,
@@ -359,7 +357,7 @@ async function doMint() {
       isMutable: true,
     }));
 
-    // 2) Mint an den Minter
+    // 2) mint to minter
     builder = builder.add(mintV1(umi, {
       mint: mint.publicKey,
       authority: umi.identity,
@@ -369,18 +367,25 @@ async function doMint() {
       tokenStandard: CFG.TOKEN_STANDARD,
     }));
 
-    // ========== Transaktion bauen → VersionedTransaction ==========
+    // ========== Blockhash (explicit) ==========
     const conn = await ensureConnection();
-    let recentBlockhash = undefined;
+    let recentBlockhash;
     try {
       const { blockhash } = await conn.getLatestBlockhash("finalized");
       recentBlockhash = blockhash;
     } catch (e) {
-      log("Blockhash via Worker-RPC nicht verfügbar – Phantom sendet trotzdem.", String(e?.message||e));
+      log("Could not fetch blockhash via worker RPC.", String(e?.message||e));
     }
 
+    // IMPORTANT: set blockhash on the UMI builder to avoid SDK error
+    if (recentBlockhash && typeof builder.setBlockhash === 'function') {
+      try { builder = builder.setBlockhash(recentBlockhash); } catch {}
+    }
+
+    // Build UMI transaction
     const built = await builder.build(umi);
 
+    // Convert to VersionedTransaction for Phantom
     const payer = new PublicKey(umi.identity.publicKey.toString());
     const msg = new TransactionMessage({
       payerKey: payer,
@@ -401,25 +406,25 @@ async function doMint() {
     const vtx = new VersionedTransaction(msg);
 
     // ========== Phantom sign+send ==========
-    setStatus("Bitte im Wallet signieren…", "info");
+    setStatus("Please sign in Phantom…", "info");
     const { signature } = await phantom.signAndSendTransaction(vtx);
-    log("gesendet", { signature });
+    log("sent", { signature });
 
-    setStatus(`⏳ Bestätige Transaktion…`, "info");
+    setStatus(`⏳ Confirming transaction…`, "info");
     try {
       await conn.confirmTransaction(signature, "confirmed");
     } catch (e) {
-      log("Bestätigung via Worker-RPC fehlgeschlagen (okay).", String(e?.message||e));
+      log("Confirmation via worker RPC failed (non-fatal).", String(e?.message||e));
     }
 
     const link = `https://solscan.io/tx/${signature}`;
-    setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
+    setStatus(`✅ Mint successful! <a class="link" href="${link}" target="_blank" rel="noopener">View on Solscan</a>`, "ok");
 
     await markClaimed(id);
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
   } catch (e) {
-    handleError("Mint fehlgeschlagen:", e);
+    handleError("Mint failed:", e);
   } finally {
     setSpin(false);
     const btn = $("mintBtn");
@@ -436,8 +441,8 @@ function handleError(context, e) {
   console.error(context, e);
   let msg = e?.message || String(e);
   let user = msg;
-  if (/user rejected|reject|denied|Abgelehnt/i.test(msg)) user = "Signierung abgebrochen";
-  else if (/insufficient funds|insufficient/i.test(msg)) user = "Unzureichendes SOL-Guthaben";
+  if (/user rejected|reject|denied|abgelehnt/i.test(msg)) user = "Signature rejected";
+  else if (/insufficient funds|insufficient/i.test(msg)) user = "Insufficient SOL balance";
   setStatus(`❌ ${user}`, "err");
   log(`${context} ${msg}`);
 }
@@ -449,7 +454,7 @@ function wireUI() {
   $("randBtn")?.addEventListener("click", setRandomFreeId);
   $("tokenId")?.addEventListener("input", updatePreview);
 
-  // Donation-Pills
+  // Donation pills
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer = $("customDonationContainer");
   const customInput = $("customDonationInput");
@@ -483,12 +488,12 @@ function wireUI() {
   updateEstimatedCost();
 }
 
-/* ==================== START ==================== */
+/* ==================== BOOT ==================== */
 document.addEventListener("DOMContentLoaded", async () => {
-  log("System initialisiert", { build: BUILD_TAG, rpcs: CFG.RPCS });
+  log("System boot", { build: BUILD_TAG, rpcs: CFG.RPCS });
   wireUI();
-  await bootstrapClaims();
+  await bootstrapClaims().catch(()=>{});
   const inp = $("tokenId");
-  inp.value = "0";
+  if (inp) inp.value = "0";
   await setRandomFreeId();
 });
