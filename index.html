@@ -3,21 +3,31 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+
+  <!-- Strenge, aber kompatible CSP (esm.sh + dein IPFS-Gateway + Wallets) -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' https:;
-                 connect-src https:;
-                 script-src 'self' https://esm.sh;
-                 style-src 'self' 'unsafe-inline';
-                 img-src 'self' https: data: ipfs:;
-                 font-src 'self';
-                 media-src https: data: ipfs: blob:;">
+        content="
+          default-src 'self' https:;
+          connect-src https: wss:;
+          script-src 'self' https://esm.sh;
+          style-src 'self' 'unsafe-inline';
+          img-src 'self' https: data: ipfs:;
+          font-src 'self';
+          media-src https: data: ipfs: blob:;
+        ">
+
   <title>Pi Pyramid — Free Mint | Inpinity.online</title>
   <meta name="description" content="Offizieller Free Mint der Pi Pyramid. 10.000 NFTs (#0–#9999). Royalties 7 %, Creator 100 %." />
   <meta property="og:title" content="Pi Pyramid — Free Mint | Inpinity.online" />
   <meta property="og:description" content="Kostenloser Mint für 10.000 NFTs (#0–#9999)." />
-  <meta property="og:image" content="https://cloudflare-ipfs.com/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
+  <meta property="og:image" content="https://ipfs.inpinity.online/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
+
+  <!-- Performance Hints -->
+  <link rel="preconnect" href="https://esm.sh" />
+  <link rel="preconnect" href="https://ipfs.inpinity.online" />
+
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>

@@ -14,16 +14,16 @@ const CFG = {
   ROYALTY_BPS: 700,
   MAX_INDEX: 9999,
 
-  // Deine CIDs
-  JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
+  // Deine CIDs (Rohmaterial auf deinem Gateway)
+  JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu", // 0..9999.json
   COLLECTION_CID: "bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a",
   MP4_BASE_CID: "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",
   PNG_BASE_CID: "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
 
-  // Gateways
+  // Gateways: dein eigenes zuerst
   GATEWAYS: [
+    "https://ipfs.inpinity.online/ipfs",
     "https://ipfs.io/ipfs",
-    "https://dweb.link/ipfs",
     "https://cloudflare-ipfs.com/ipfs"
   ],
 
@@ -37,7 +37,7 @@ import { publicKey as umiPk, generateSigner, transactionBuilder, lamports, base5
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 import {
   mplTokenMetadata,
-  createV1,                // <-- FIX: use createV1
+  createV1, // WICHTIG: createV1 verwenden (createV3 existiert hier nicht)
   mintV1,
   findMasterEditionPda,
   findMetadataPda,
@@ -48,7 +48,14 @@ import { setComputeUnitLimit, setComputeUnitPrice, transferSol } from "https://e
 /* ========= HELPERS ========= */
 const $ = (id) => document.getElementById(id);
 const setStatus = (t, cls = "") => { const el = $("status"); if (!el) return; el.className = `status ${cls}`; el.innerHTML = t; };
-const log = (msg, obj) => { const el=$("log"); if(!el) return; const time=new Date().toLocaleTimeString(); const line=`[${time}] ${msg}`; if(obj) console.debug(line,obj); el.textContent+=line+(obj?" "+JSON.stringify(obj,null,2):"")+"\n"; el.scrollTop=el.scrollHeight; if(/error|warn/i.test(msg)){ el.classList.remove("hidden"); $("toggleLogs").textContent="Ausblenden"; } };
+const log = (msg, obj) => {
+  const el=$("log"); if(!el) return;
+  const time=new Date().toLocaleTimeString(); const line=`[${time}] ${msg}`;
+  if(obj) console.debug(line,obj);
+  el.textContent+=line+(obj?" "+JSON.stringify(obj,null,2):"")+"\n";
+  el.scrollTop=el.scrollHeight;
+  if(/error|warn/i.test(msg)){ el.classList.remove("hidden"); $("toggleLogs").textContent="Ausblenden"; }
+};
 const setSpin = (on) => { const sp=document.querySelector(".spinner"); const lbl=document.querySelector(".btn-label"); if(!sp||!lbl) return; sp.hidden=!on; lbl.style.opacity=on?0.75:1; };
 
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
@@ -72,8 +79,7 @@ function getSelectedDonation() {
 }
 function updateEstimatedCost() {
   const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
-  const lbl = $("costLabel");
-  if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
+  const lbl = $("costLabel"); if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
 }
 
 /* ========= WALLET ========= */
@@ -180,7 +186,7 @@ async function updatePreview() {
     } catch {}
   }
 
-  // Fallbacks aus CIDs
+  // Fallbacks aus CIDs (falls JSON nur teilweise ist)
   if (meta && !meta.image)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
@@ -264,14 +270,14 @@ async function doMint() {
       }));
     }
 
-    // FIX: createV1 statt createV3
+    // createV1 verwenden (public mint, ohne Collection-Verifizierung)
     builder = builder.add(createV1(umi, {
       mint,
       name: nftName,
       uri: nftUri,
       sellerFeeBasisPoints: CFG.ROYALTY_BPS,
       creators: some([{ address: umiPk(CFG.CREATOR), verified: true, share: 100 }]),
-      collection: some({ key: collectionMint, verified: false }), // public mint: nicht verifizieren
+      collection: some({ key: collectionMint, verified: false }),
       tokenStandard: CFG.TOKEN_STANDARD,
       isMutable: true,
     }));
@@ -291,7 +297,7 @@ async function doMint() {
     let result;
     for (let i = 0; i < CFG.RPCs.length; i++) {
       try {
-        umi.rpc = createUmi(CFG.RPCs[i]).rpc; // RPC-Fallback, Identity bleibt
+        umi.rpc = createUmi(CFG.RPCs[i]).rpc; // RPC-Fallback
         result = await builder.sendAndConfirm(umi);
         break;
       } catch (e) {
@@ -410,6 +416,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadClaims();
   await updatePreview();
 
-  // Hinweis: EVM-Extensions können Konsole "rot" machen, aber stören die App nicht.
-  // Für sauberes Testen: MetaMask/Rabby kurz deaktivieren.
+  // Debug-Hinweis: EVM-Wallets (MetaMask/Rabby) werfen teils Konsolenfehler (irrelevant).
+  // Teste am besten im privaten Fenster mit nur Phantom/Backpack/Solflare aktiv.
 });

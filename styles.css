@@ -59,8 +59,6 @@ h1 { font-size: 20px; margin: 0; }
 .statusbar { margin-top: 8px; display: flex; gap: 18px; flex-wrap: wrap; font-size: .95rem; }
 .muted { color: var(--muted); }
 .hint { color: var(--muted); font-size: .92rem; }
-
-/* Status pill styles for setStatus() */
 .status { margin: .8rem 0 0; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent; text-align: center; }
 .status.ok   { color: var(--ok);  border-color: rgba(16,185,129,.25); background: rgba(16,185,129,.08); }
 .status.err  { color: var(--err); border-color: rgba(239,68,68,.25); background: rgba(239,68,68,.08); }
@@ -80,10 +78,9 @@ h1 { font-size: 20px; margin: 0; }
 .btn {
   background: #0c0d14; color: var(--text); border: 1px solid var(--line);
   border-radius: 10px; padding: 10px 14px; cursor: pointer; display: inline-flex;
-  align-items: center; gap: 10px; transition: border-color .15s ease, transform .08s ease;
+  align-items: center; gap: 10px; transition: border-color .15s ease;
 }
 .btn:hover { border-color: var(--accent2); }
-.btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: .6; cursor: not-allowed; }
 .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); border-color: transparent; color: #081018; font-weight: 700; }
 .btn-ghost { background: transparent; }
@@ -152,7 +149,7 @@ h1 { font-size: 20px; margin: 0; }
   color: var(--muted); padding: 0 16px;
 }
 
-/* Fatal banner (optional) */
+/* Fatal-Banner (optional) */
 #fatal {
   display: none; position: sticky; top: 0; left: 0; right: 0;
   background: #3b0b0b; color: #ffdede; padding: 8px 12px; border-bottom: 1px solid #6a1a1a; z-index: 9999;
