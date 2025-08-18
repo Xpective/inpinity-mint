@@ -3,8 +3,7 @@ const CFG = {
   // Nur öffentliche, schlüsselfreie Mainnet-RPCs (kein Alchemy)
   RPCs: [
     "https://api.mainnet-beta.solana.com",
-    "https://rpc.ankr.com/solana",
-    "https://solana.public-rpc.com"
+   
   ],
   currentRPC: 0,
 
