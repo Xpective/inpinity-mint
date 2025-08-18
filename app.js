@@ -1,6 +1,6 @@
 /* ==================== KONFIG ==================== */
 const CFG = {
-  // RPC über deinen Worker (primär Domain-Route, fallback workers.dev):
+  // NUR Worker (primär Domain-Route, Fallback workers.dev)
   RPCS: [
     "https://api.inpinity.online/rpc",
     "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc"
@@ -14,7 +14,7 @@ const CFG = {
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   MINT_FEE_SOL: 0.02,
 
-  // Optional: Collection (kannst du später on-chain verifizieren)
+  // Optional: Collection (später on-chain verifizieren)
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
 
   ROYALTY_BPS: 700, // 7 %
@@ -23,7 +23,7 @@ const CFG = {
 
   // IPFS
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
-  // Falls im JSON kein image/animation_url ist, fallback:
+  // Fallbacks falls im JSON kein image/animation_url gesetzt ist:
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
@@ -43,7 +43,7 @@ import { createUmi as createUmiDefaults } from "https://esm.sh/@metaplex-foundat
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 
 import {
-  mplTokenMetadata, createV1, mintV1, findMasterEditionPda
+  mplTokenMetadata, createV1, mintV1
 } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
 
 import {
@@ -78,38 +78,37 @@ const toHttp = (u) => {
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
 
-function firstOkUrl(urls) {
-  let i = 0;
-  return async function doFetch(input, init) {
-    while (i < urls.length) {
-      const base = urls[i];
-      try {
-        const res = await fetch(base, init);
-        if (res.status !== 403 && res.status !== 429 && res.status < 500) return res;
-      } catch {}
-      i++;
-    }
-    // letzter Versuch mit erster URL — für debugging
-    return fetch(urls[0], init);
-  };
-}
-
 /* ==================== STATE ==================== */
 let umi = null;
 let phantom = null;
-let rpcConn = null; // über Worker
+let rpcConn = null; // Connection über Worker
 let originalBtnText = "";
 let claimedSet = new Set();
 let availableIds = [];
 
 /* ==================== RPC via Worker ==================== */
-function buildConnection() {
-  // web3.js Connection auf deinen Worker (erste erreichbare)
-  for (const e of CFG.RPCS) {
-    // kein Ping hier – wir probieren beim ersten call
-    return new Connection(e, { commitment: "confirmed" });
+// Ping jeden RPC-Endpoint mit einem minimalen JSON-RPC Call und nimm den ersten, der OK ist.
+async function pickRpcEndpoint() {
+  for (const url of CFG.RPCS) {
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestBlockhash", params: [{ commitment: "processed" }] }),
+      });
+      if (r.ok) return url;
+    } catch {}
   }
-  return new Connection(CFG.RPCS[0], { commitment: "confirmed" });
+  // Fallback: nimm die erste URL (sollte dein Domain-Worker sein)
+  return CFG.RPCS[0];
+}
+
+async function ensureConnection() {
+  if (rpcConn) return rpcConn;
+  const chosen = await pickRpcEndpoint();
+  rpcConn = new Connection(chosen, { commitment: "confirmed" });
+  log("RPC aktiv", { rpc: chosen });
+  return rpcConn;
 }
 
 /* ==================== UI: Spenden ==================== */
@@ -123,7 +122,7 @@ function getSelectedDonation() {
   return parseFloat(sel.value);
 }
 function updateEstimatedCost() {
-  const total = 0.02 + getSelectedDonation(); // fixe 0.02 SOL + Donation
+  const total = CFG.MINT_FEE_SOL + getSelectedDonation();
   const lbl = $("costLabel"); if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
 }
 
@@ -136,11 +135,11 @@ async function connectPhantom() {
     const resp = await w.connect(); // Popup
     phantom = w;
 
-    // UMI (kein Broadcast nötig, wir bauen nur Instruktionen)
-    // Ein RPC wird von UMI nicht zwingend benötigt – setzen wir aber auf deinen Worker für evtl. lookups:
+    // UMI: wir setzen als RPC direkt deinen Worker (1. Eintrag)
     umi = createUmiDefaults(CFG.RPCS[0]).use(walletAdapterIdentity(phantom)).use(mplTokenMetadata());
 
-    rpcConn = buildConnection();
+    // web3 Connection über Worker initialisieren
+    await ensureConnection();
 
     const pk58 = resp.publicKey.toString();
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
@@ -165,7 +164,8 @@ async function connectPhantom() {
 async function updateBalance() {
   if (!phantom?.publicKey) return;
   try {
-    const lam = await rpcConn.getBalance(new PublicKey(phantom.publicKey.toString()));
+    const conn = await ensureConnection();
+    const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString()));
     const sol = lam / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
   } catch (e) {
@@ -175,21 +175,27 @@ async function updateBalance() {
 }
 
 /* ==================== CLAIMS (Worker) ==================== */
-function claimsUrl() { return CFG.CLAIMS.find(Boolean); }
+function claimsUrl() { return CFG.CLAIMS[0] || CFG.CLAIMS[1]; }
 
 async function fetchClaims() {
-  try {
-    const r = await fetch(claimsUrl());
-    if (!r.ok) return [];
-    const j = await r.json();
-    const arr = Array.isArray(j) ? j : Array.isArray(j.claimed) ? j.claimed : j.claimed ?? [];
-    return arr;
-  } catch { return []; }
+  for (const url of CFG.CLAIMS) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const arr = Array.isArray(j) ? j : Array.isArray(j.claimed) ? j.claimed : j.claimed ?? [];
+      return arr;
+    } catch {}
+  }
+  return [];
 }
 async function markClaimed(i) {
-  try {
-    await fetch(claimsUrl(), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ index: i }) });
-  } catch {}
+  for (const url of CFG.CLAIMS) {
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ index: i }) });
+      if (r.ok) return;
+    } catch {}
+  }
 }
 function recomputeAvailable() {
   availableIds = [];
@@ -307,16 +313,15 @@ async function doMint() {
     const nftName = `Pi Pyramid #${id}`;
     const nftUri  = uriForId(id);
 
-    const collectionMint    = umiPk(CFG.COLLECTION_MINT);
-    const collectionEdition = findMasterEditionPda(umi, { mint: collectionMint });
-    const tokenAccount      = findAssociatedTokenPda(umi, { mint: mint.publicKey, owner: umi.identity.publicKey });
+    const collectionMint = umiPk(CFG.COLLECTION_MINT);
+    const tokenAccount   = findAssociatedTokenPda(umi, { mint: mint.publicKey, owner: umi.identity.publicKey });
 
     let builder = transactionBuilder()
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 })); // kleine Priority Fee
 
     // 0) Fixe Creator-Fee 0.02 SOL
-    builder = builder.add(transferSol(umi, {
+    builder = builder.add(transferSol(imiFix(umi), {
       from: umi.identity,
       to: umiPk(CFG.CREATOR),
       amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9))
@@ -354,21 +359,24 @@ async function doMint() {
     }));
 
     // ========== Transaktion bauen → VersionedTransaction ==========
-    // Hole Blockhash über deinen Worker-RPC (kein 403)
+    const conn = await ensureConnection();
     let recentBlockhash = undefined;
     try {
-      const { blockhash } = await rpcConn.getLatestBlockhash("finalized");
+      const { blockhash } = await conn.getLatestBlockhash("finalized");
       recentBlockhash = blockhash;
     } catch (e) {
       log("Blockhash via Worker-RPC nicht verfügbar – Phantom sendet trotzdem.", String(e?.message||e));
     }
 
     const built = await builder.build(umi);
-    // Mapping der UMI-Message → v0 message (vereinfachtes Mapping, ausreichend hier)
+
+    // Mapping der UMI-Message → v0 message
     const payer = new PublicKey(umi.identity.publicKey.toString());
     const msg = new TransactionMessage({
       payerKey: payer,
-      recentBlockhash: recentBlockhash ?? base58.encode(built.getTransaction().message.recentBlockhash ?? new Uint8Array()),
+      recentBlockhash: recentBlockhash ?? base58.encode(
+        built.getTransaction().message.recentBlockhash ?? new Uint8Array()
+      ),
       instructions: built.getInstructions().map(ix => ({
         programId: new PublicKey(ix.getProgramAddress().toString()),
         keys: ix.getAccountMetas().map(m => ({
@@ -389,7 +397,7 @@ async function doMint() {
 
     setStatus(`⏳ Bestätige Transaktion…`, "info");
     try {
-      await rpcConn.confirmTransaction(signature, "confirmed");
+      await conn.confirmTransaction(signature, "confirmed");
     } catch (e) {
       log("Bestätigung via Worker-RPC fehlgeschlagen (okay).", String(e?.message||e));
     }
@@ -413,6 +421,9 @@ async function doMint() {
     }
   }
 }
+
+// kleine UMI-Sicherungsfunktion (manche Bundler mergen tree-shaking zu aggressiv)
+function imiFix(u){ return u; }
 
 /* ==================== ERROR HANDLING ==================== */
 function handleError(context, e) {
@@ -443,8 +454,7 @@ function wireUI() {
     if (!checked) return;
     const pill = checked.closest(".pill");
     if (pill) pill.classList.add("active");
-    if (checked.value === "custom") customContainer.style.display = "inline-flex";
-    else customContainer.style.display = "none";
+    customContainer.style.display = (checked.value === "custom") ? "inline-flex" : "none";
     updateEstimatedCost();
   };
 
@@ -471,7 +481,7 @@ function wireUI() {
 document.addEventListener("DOMContentLoaded", async () => {
   wireUI();
   await bootstrapClaims();
-  // first preview:
+  // erste Vorschau & freie ID
   const inp = $("tokenId");
   inp.value = "0"; // auto
   await setRandomFreeId();
