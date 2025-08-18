@@ -1,89 +1,97 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Pi Pyramid — Public Mint | Inpinity</title>
+  <title>Pi Pyramid — Public Mint | Inpinity.online</title>
 
-  <!-- SEO -->
-  <meta name="description" content="Official public mint of Pi Pyramid on Solana. 10,000 supply (#0–#9999). 7% royalties. Optional donations. Powered by Phantom & a Cloudflare Worker RPC." />
-  <link rel="canonical" href="https://inpinity.online/mint" />
-
-  <!-- Open Graph -->
-  <meta property="og:title" content="Pi Pyramid — Public Mint | Inpinity" />
-  <meta property="og:description" content="Mint a Pi Pyramid NFT on Solana. 10,000 supply (#0–#9999). Optional donations." />
-  <meta property="og:type" content="website" />
-  <meta property="og:url" content="https://inpinity.online/mint" />
+  <meta name="description" content="Offizieller Mint der Pi Pyramid. Free mint + Donation-Option. 10.000 NFTs (#0–#9999). Royalties 7 %, Creator 100 %." />
+  <meta property="og:title" content="Pi Pyramid — Public Mint | Inpinity.online" />
+  <meta property="og:description" content="Free mint + optional Donation. 10.000 NFTs (#0–#9999)." />
   <meta property="og:image" content="https://ipfs.io/ipfs/bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a/0.png" />
-
-  <!-- Twitter -->
+  <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Pi Pyramid — Public Mint | Inpinity" />
-  <meta name="twitter:description" content="Mint a Pi Pyramid NFT on Solana. Optional donations, 7% royalties." />
-  <meta name="twitter:image" content="https://ipfs.io/ipfs/bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a/0.png" />
 
-  <!-- PWA / Theming (optional) -->
-  <meta name="theme-color" content="#0b0b0b" />
-
-  <!-- Preconnect hints for faster module loads -->
-  <link rel="preconnect" href="https://esm.sh" crossorigin>
-  <link rel="dns-prefetch" href="https://esm.sh">
-
-  <!-- Styles -->
-  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    :root { --b:#0a0a0a; --t:#111; --g:#eee; --m:#666; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fff;color:#111}
+    header{padding:20px}
+    header h1{margin:0 0 6px}
+    .wrap{padding:16px;display:grid;gap:16px;max-width:1100px;margin:0 auto}
+    .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .pill{border:1px solid #222;border-radius:999px;padding:6px 10px;display:flex;gap:8px;align-items:center;cursor:pointer}
+    .pill.active{background:#111;color:#fff}
+    .muted{color:#666}
+    .grid{display:grid;grid-template-columns:420px 1fr;gap:16px}
+    @media (max-width:1000px){.grid{grid-template-columns:1fr}}
+    .card{border:1px solid #e3e3e3;border-radius:12px;overflow:hidden}
+    .card .body{padding:12px}
+    .media{display:flex;align-items:center;justify-content:center;min-height:260px;background:#f8f8f8}
+    .media img,.media video{max-width:100%;max-height:420px;display:block}
+    dl{display:grid;grid-template-columns:120px 1fr;gap:8px;margin:0}
+    dt{font-weight:600}
+    dd{margin:0}
+    button{padding:11px 14px;border:1px solid #111;border-radius:10px;background:#fff;cursor:pointer}
+    button[disabled]{opacity:0.6;cursor:not-allowed}
+    .primary{background:#111;color:#fff}
+    .status{min-height:1.4em}
+    .status.ok{color:#0a7a0a}
+    .status.warn{color:#b37c00}
+    .status.err{color:#b00020}
+    .spinner{width:16px;height:16px;border:2px solid #ddd;border-top-color:#111;border-radius:50%;animation:sp 1s linear infinite}
+    @keyframes sp{to{transform:rotate(360deg)}}
+    .foot{color:#666;font-size:12px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .log{white-space:pre-wrap;background:#0f0f0f;color:#cfcfcf;padding:8px;border-radius:8px;max-height:180px;overflow:auto}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    input[type="number"], input[type="text"]{padding:9px;border:1px solid #ccc;border-radius:8px;width:120px}
+    .btn-label{display:inline-block;min-width:7.5em;text-align:center}
+    .inline{display:inline-flex;gap:8px;align-items:center}
+    .small{font-size:12px}
+    .link{color:#0b6; text-decoration:none}
+  </style>
 </head>
 <body>
-  <header class="site-header">
-    <div class="container">
-      <div class="brand">
-        <div class="logo" aria-hidden="true">π</div>
-        <div class="titles">
-          <h1>Pi Pyramid — Public Mint</h1>
-          <p class="muted">10,000 supply (#0–#9999) · 7% royalties · Creator 100%</p>
-        </div>
-      </div>
-      <nav class="top-actions" aria-label="Wallet">
-        <button id="connectBtn" class="btn btn-primary">Connect Phantom</button>
-        <div class="wallet-stats">
-          <span>Wallet: <strong id="walletLabel">not connected</strong></span>
-          <span>Balance: <strong id="balanceLabel">—</strong></span>
-        </div>
-      </nav>
-    </div>
+  <header>
+    <h1>Pi Pyramid — Public Mint</h1>
+    <p class="muted">10.000 Stück (#0–#9999) · 7% Royalties · Creator 100%</p>
   </header>
 
-  <main class="container">
-    <section class="grid">
-      <!-- Preview / Metadata -->
-      <article class="card">
-        <div class="media" id="mediaBox" aria-live="polite">
-          <span class="muted">No preview yet…</span>
-        </div>
-        <div class="card-body">
-          <div class="row">
-            <label for="tokenId" class="label">Token number (empty/0 = auto):</label>
-            <input id="tokenId" class="input" type="number" min="0" max="9999" placeholder="auto" inputmode="numeric" />
-            <button id="randBtn" class="btn">Find free number</button>
-            <span class="muted">free: <span id="freeCounter">—</span></span>
-          </div>
-          <div class="small mono uri-line">
-            URI: <span id="previewUri">—</span> ·
-            <span id="uriStatus" class="muted">—</span>
-          </div>
-          <div id="metaBox" class="meta-box" role="region" aria-live="polite"></div>
-        </div>
-      </article>
+  <div class="wrap">
 
-      <!-- Mint Action -->
-      <article class="card">
-        <div class="card-body">
-          <h2 class="h3">Mint</h2>
+    <!-- Wallet / Controls -->
+    <div class="bar">
+      <button id="connectBtn" class="primary">Mit Phantom verbinden</button>
+      <div>Wallet: <strong id="walletLabel">nicht verbunden</strong></div>
+      <div>Balance: <strong id="balanceLabel">—</strong></div>
+    </div>
+
+    <!-- ID Auswahl + Preview -->
+    <div class="grid">
+      <div class="card">
+        <div class="media" id="mediaBox"><span class="muted">Noch keine Vorschau…</span></div>
+        <div class="body">
+          <div class="row">
+            <label for="tokenId">Nummer (leer/0 = auto):</label>
+            <input id="tokenId" type="number" min="0" max="9999" placeholder="auto" />
+            <button id="randBtn">freie Nummer finden</button>
+            <span class="muted">frei: <span id="freeCounter">—</span></span>
+          </div>
+          <div class="small mono">URI: <span id="previewUri">—</span> · <span id="uriStatus" class="muted">—</span></div>
+          <div id="metaBox" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="body">
+          <h3>Mint</h3>
           <p class="small">
-            Fixed creator fee: <strong>0.02 SOL</strong>. You can optionally add a donation below.
+            Fixe Creator-Fee: <strong>0.02 SOL</strong>. Optional kannst du zusätzlich spenden.
           </p>
 
-          <div id="donationOptions" class="donation-bar" role="group" aria-label="Donation options">
+          <!-- Donation-Auswahl -->
+          <div id="donationOptions" class="bar">
             <label class="pill active">
               <input type="radio" name="donation" value="0" checked hidden />
               0 SOL
@@ -105,74 +113,30 @@
               Custom
             </label>
             <span id="customDonationContainer" class="inline" style="display:none">
-              <input id="customDonationInput" class="input" type="number" step="0.001" min="0" placeholder="e.g. 0.25" />
+              <input id="customDonationInput" type="number" step="0.001" min="0" placeholder="z. B. 0.25" />
             </span>
           </div>
 
           <div class="row">
-            <button id="mintBtn" class="btn btn-primary" disabled>
-              <span class="btn-label">Mint now</span>
-              <span class="spinner" hidden aria-hidden="true"></span>
+            <button id="mintBtn" class="primary" disabled>
+              <span class="btn-label">Jetzt minten</span>
+              <span class="spinner" hidden></span>
             </button>
-            <span class="muted">Estimated total: <strong id="costLabel">≈ 0.020 SOL</strong></span>
+            <span class="muted">Gesamtschätzung: <strong id="costLabel">≈ 0.020 SOL</strong></span>
           </div>
 
-          <div id="status" class="status muted" style="margin-top:8px" aria-live="polite">—</div>
-          <div id="log" class="log small" style="margin-top:8px" aria-live="polite" aria-label="Activity log"></div>
+          <div id="status" class="status muted" style="margin-top:8px">—</div>
+          <div id="log" class="log small" style="margin-top:8px"></div>
         </div>
-      </article>
-    </section>
-
-    <!-- Info / FAQ -->
-    <section class="info">
-      <div class="info-grid">
-        <article class="info-card">
-          <h3 class="h4">Collection</h3>
-          <dl class="kv">
-            <dt>Creator</dt><dd class="mono">GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp</dd>
-            <dt>Collection Mint</dt><dd class="mono">DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS</dd>
-            <dt>Royalties</dt><dd>7%</dd>
-            <dt>Supply</dt><dd>10,000 (#0–#9999)</dd>
-          </dl>
-        </article>
-        <article class="info-card">
-          <h3 class="h4">Metadata</h3>
-          <p class="small">JSON CID:</p>
-          <p class="mono small">bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu</p>
-          <p class="small">Preview collection CID:</p>
-          <p class="mono small">bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a</p>
-        </article>
-        <article class="info-card">
-          <h3 class="h4">How it works</h3>
-          <ol class="steps small">
-            <li>Connect Phantom and pick a token number (or auto-find a free one).</li>
-            <li>Review the preview & metadata loaded directly from IPFS.</li>
-            <li>Click “Mint now”, sign in Phantom, and wait for confirmation.</li>
-          </ol>
-          <p class="tiny muted">RPC requests are proxied via our Cloudflare Worker with CORS & fallback handling.</p>
-        </article>
       </div>
-    </section>
-  </main>
-
-  <footer class="site-footer">
-    <div class="container foot">
-      <p class="tiny">Security tip: Always verify the site URL (<span class="mono">inpinity.online</span>) and never approve unknown transactions.</p>
-      <p class="tiny">© <span id="year"></span> Inpinity. All rights reserved.</p>
     </div>
-  </footer>
 
-  <noscript>
-    <div class="noscript">This site requires JavaScript to mint.</div>
-  </noscript>
+    <div class="foot">
+      CID (JSON): <code class="mono">bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu</code>
+      &nbsp;·&nbsp; Dev-Collection CID: <code class="mono">bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a</code>
+    </div>
+  </div>
 
-  <!-- App -->
-  <script>
-    // small helper to keep the year current
-    document.addEventListener('DOMContentLoaded', () => {
-      const y = document.getElementById('year'); if (y) y.textContent = new Date().getFullYear();
-    });
-  </script>
-  <script type="module" src="./app.js?v=8"></script>
+<script type="module" src="./app.js?v=8"></script>
 </body>
 </html>
