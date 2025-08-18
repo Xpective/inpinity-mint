@@ -3,8 +3,6 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-
-  <!-- CSP: erlaubt esm.sh + IPFS-Medien -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self' https:;
                  connect-src https:;
@@ -13,16 +11,13 @@
                  img-src 'self' https: data: ipfs:;
                  font-src 'self';
                  media-src https: data: ipfs: blob:;">
-
   <title>Pi Pyramid — Free Mint | Inpinity.online</title>
-
   <meta name="description" content="Offizieller Free Mint der Pi Pyramid. 10.000 NFTs (#0–#9999). Royalties 7 %, Creator 100 %." />
   <meta property="og:title" content="Pi Pyramid — Free Mint | Inpinity.online" />
   <meta property="og:description" content="Kostenloser Mint für 10.000 NFTs (#0–#9999)." />
-  <meta property="og:image" content="https://ipfs.io/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
+  <meta property="og:image" content="https://cloudflare-ipfs.com/ipfs/bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4/0.png" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
-
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -115,7 +110,6 @@
     <a href="https://solscan.io/address/DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS" target="_blank" rel="noopener">Collection auf Solscan</a>
   </footer>
 
-  <!-- Dein App-Code (ESM) -->
   <script type="module" src="./app.js"></script>
 </body>
 </html>

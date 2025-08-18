@@ -6,9 +6,11 @@ const CFG = {
     "https://rpc.ankr.com/solana"
   ],
   currentRPC: 0,
+
   TREASURY: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   CREATOR:  "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
+
   ROYALTY_BPS: 700,
   MAX_INDEX: 9999,
 
@@ -18,7 +20,7 @@ const CFG = {
   MP4_BASE_CID: "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",
   PNG_BASE_CID: "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
 
-  // Gateways: ipfs.io zuerst (Cloudflare ans Ende)
+  // Gateways
   GATEWAYS: [
     "https://ipfs.io/ipfs",
     "https://dweb.link/ipfs",
@@ -35,7 +37,7 @@ import { publicKey as umiPk, generateSigner, transactionBuilder, lamports, base5
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 import {
   mplTokenMetadata,
-  createV3,
+  createV1,                // <-- FIX: use createV1
   mintV1,
   findMasterEditionPda,
   findMetadataPda,
@@ -70,7 +72,8 @@ function getSelectedDonation() {
 }
 function updateEstimatedCost() {
   const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
-  $("costLabel").textContent = `≈ ${total.toFixed(3)} SOL`;
+  const lbl = $("costLabel");
+  if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
 }
 
 /* ========= WALLET ========= */
@@ -118,7 +121,7 @@ let availableIds = [];
 
 async function loadClaims() {
   try {
-    // (Optional) Wenn du später eine claims.json hast, hier laden.
+    // (Optional) später claims.json laden
     claimedSet = new Set();
   } catch (e) {
     claimedSet = new Set();
@@ -133,7 +136,10 @@ function recomputeAvailable() {
 }
 async function isIdAvailable(id) {
   if (claimedSet.has(id)) return false;
-  const checks = CFG.GATEWAYS.map(gw => fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: 'HEAD', cache: 'no-store' }).then(r=>r.ok).catch(()=>false));
+  const checks = CFG.GATEWAYS.map(gw =>
+    fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: 'HEAD', cache: 'no-store' })
+      .then(r=>r.ok).catch(()=>false)
+  );
   return (await Promise.all(checks)).some(Boolean);
 }
 async function pickRandomFreeId() {
@@ -174,7 +180,7 @@ async function updatePreview() {
     } catch {}
   }
 
-  // Fallbacks aus deinen CIDs
+  // Fallbacks aus CIDs
   if (meta && !meta.image)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
@@ -258,13 +264,14 @@ async function doMint() {
       }));
     }
 
-    builder = builder.add(createV3(umi, {
+    // FIX: createV1 statt createV3
+    builder = builder.add(createV1(umi, {
       mint,
       name: nftName,
       uri: nftUri,
       sellerFeeBasisPoints: CFG.ROYALTY_BPS,
       creators: some([{ address: umiPk(CFG.CREATOR), verified: true, share: 100 }]),
-      collection: some({ key: collectionMint, verified: false }),
+      collection: some({ key: collectionMint, verified: false }), // public mint: nicht verifizieren
       tokenStandard: CFG.TOKEN_STANDARD,
       isMutable: true,
     }));
@@ -284,7 +291,7 @@ async function doMint() {
     let result;
     for (let i = 0; i < CFG.RPCs.length; i++) {
       try {
-        umi.rpc = createUmi(CFG.RPCs[i]).rpc;
+        umi.rpc = createUmi(CFG.RPCs[i]).rpc; // RPC-Fallback, Identity bleibt
         result = await builder.sendAndConfirm(umi);
         break;
       } catch (e) {
@@ -343,7 +350,7 @@ function wireUI() {
     $("toggleLogs").textContent = el.classList.contains("hidden") ? "Anzeigen" : "Ausblenden";
   });
 
-  // Spenden-Pills: Active-Style + Radio setzen
+  // Spendenauswahl
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer = $("customDonationContainer");
   const customInput = $("customDonationInput");
@@ -402,4 +409,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   wireUI();
   await loadClaims();
   await updatePreview();
+
+  // Hinweis: EVM-Extensions können Konsole "rot" machen, aber stören die App nicht.
+  // Für sauberes Testen: MetaMask/Rabby kurz deaktivieren.
 });
