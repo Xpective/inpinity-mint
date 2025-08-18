@@ -1,0 +1,24 @@
+# Node / Tooling
+node_modules/
+**/node_modules/
+npm-debug.log*
+pnpm-lock.yaml
+package-lock.json
+.yarn/*
+.yarnrc.yml
+
+# Cloudflare / Worker
+worker/.wrangler/
+worker/.dev.vars
+worker/dist/
+worker/.cache/
+*.map
+
+# Env & OS
+.env
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
