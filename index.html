@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
 
-  <!-- Strenge, aber kompatible CSP (esm.sh + dein IPFS-Gateway + Wallets) -->
+  <!-- CSP erlaubt esm.sh + dein IPFS-Gateway -->
   <meta http-equiv="Content-Security-Policy"
         content="
           default-src 'self' https:;
@@ -24,7 +24,6 @@
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
 
-  <!-- Performance Hints -->
   <link rel="preconnect" href="https://esm.sh" />
   <link rel="preconnect" href="https://ipfs.inpinity.online" />
 
@@ -42,12 +41,7 @@
       </div>
     </div>
     <div class="wallet-connect">
-      <button id="connectBtn" class="btn btn-ghost" aria-haspopup="true" aria-expanded="false">Wallet verbinden</button>
-      <div id="walletMenu" class="wallet-menu" role="menu" aria-label="Wallet Auswahl">
-        <button class="wallet-option" data-wallet="phantom" role="menuitem">Phantom</button>
-        <button class="wallet-option" data-wallet="backpack" role="menuitem">Backpack</button>
-        <button class="wallet-option" data-wallet="solflare" role="menuitem">Solflare</button>
-      </div>
+      <button id="connectBtn" class="btn btn-ghost" type="button">Mit Phantom verbinden</button>
     </div>
   </header>
 

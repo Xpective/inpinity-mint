@@ -7,27 +7,24 @@ const CFG = {
   ],
   currentRPC: 0,
 
-  TREASURY: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   CREATOR:  "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
 
   ROYALTY_BPS: 700,
   MAX_INDEX: 9999,
 
-  // Deine CIDs (Rohmaterial auf deinem Gateway)
-  JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu", // 0..9999.json
-  COLLECTION_CID: "bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a",
-  MP4_BASE_CID: "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",
-  PNG_BASE_CID: "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
+  // Deine CIDs auf deinem Gateway
+  JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
+  MP4_BASE_CID:  "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",
+  PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
 
-  // Gateways: dein eigenes zuerst
   GATEWAYS: [
     "https://ipfs.inpinity.online/ipfs",
     "https://ipfs.io/ipfs",
     "https://cloudflare-ipfs.com/ipfs"
   ],
 
-  BASE_ESTIMATED_COST: 0.003,
+  BASE_ESTIMATED_COST: 0.003, // grobe Schätzung
   TOKEN_STANDARD: 4
 };
 
@@ -37,29 +34,47 @@ import { publicKey as umiPk, generateSigner, transactionBuilder, lamports, base5
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 import {
   mplTokenMetadata,
-  createV1, // WICHTIG: createV1 verwenden (createV3 existiert hier nicht)
+  createV1,
   mintV1,
   findMasterEditionPda,
-  findMetadataPda,
-  findAssociatedTokenPda
+  findMetadataPda
 } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
-import { setComputeUnitLimit, setComputeUnitPrice, transferSol } from "https://esm.sh/@metaplex-foundation/mpl-toolbox@0.10.0?bundle";
+import {
+  setComputeUnitLimit,
+  setComputeUnitPrice,
+  transferSol,
+  findAssociatedTokenPda   // <— RICHTIG: kommt aus mpl-toolbox
+} from "https://esm.sh/@metaplex-foundation/mpl-toolbox@0.10.0?bundle";
 
 /* ========= HELPERS ========= */
 const $ = (id) => document.getElementById(id);
-const setStatus = (t, cls = "") => { const el = $("status"); if (!el) return; el.className = `status ${cls}`; el.innerHTML = t; };
-const log = (msg, obj) => {
-  const el=$("log"); if(!el) return;
-  const time=new Date().toLocaleTimeString(); const line=`[${time}] ${msg}`;
-  if(obj) console.debug(line,obj);
-  el.textContent+=line+(obj?" "+JSON.stringify(obj,null,2):"")+"\n";
-  el.scrollTop=el.scrollHeight;
-  if(/error|warn/i.test(msg)){ el.classList.remove("hidden"); $("toggleLogs").textContent="Ausblenden"; }
+const setStatus = (t, cls = "") => {
+  const el = $("status"); if (!el) return;
+  el.className = `status ${cls}`; el.innerHTML = t;
 };
-const setSpin = (on) => { const sp=document.querySelector(".spinner"); const lbl=document.querySelector(".btn-label"); if(!sp||!lbl) return; sp.hidden=!on; lbl.style.opacity=on?0.75:1; };
+const log = (msg, obj) => {
+  const el = $("log"); if (!el) return;
+  const time = new Date().toLocaleTimeString();
+  const line = `[${time}] ${msg}`;
+  if (obj) console.debug(line, obj);
+  el.textContent += line + (obj ? " " + JSON.stringify(obj, null, 2) : "") + "\n";
+  el.scrollTop = el.scrollHeight;
+  if (/error|warn|fehler|⚠️/i.test(msg)) {
+    el.classList.remove("hidden");
+    $("toggleLogs").textContent = "Ausblenden";
+  }
+};
+
+const setSpin = (on) => {
+  const sp = document.querySelector(".spinner");
+  const lbl = document.querySelector(".btn-label");
+  if (!sp || !lbl) return;
+  sp.hidden = !on;
+  lbl.style.opacity = on ? 0.75 : 1;
+};
 
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
-const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
+const httpForId = (id, gw = 0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
 const toHttp = (u) => {
   if (!u) return u;
   if (u.startsWith("ipfs://")) return `${CFG.GATEWAYS[0]}/${u.replace("ipfs://","").replace(/^ipfs\//,"")}`;
@@ -82,24 +97,20 @@ function updateEstimatedCost() {
   const lbl = $("costLabel"); if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
 }
 
-/* ========= WALLET ========= */
+/* ========= WALLET (PHANTOM ONLY) ========= */
 let umi = null;
 let originalText = "";
 
-async function connectWallet(walletType) {
+async function connectPhantom() {
   try {
-    let adapter = null;
-    if (walletType === "phantom")  adapter = window.solana?.isPhantom ? window.solana : null;
-    if (walletType === "backpack") adapter = window.backpack?.isBackpack ? window.backpack : null;
-    if (walletType === "solflare") adapter = window.solflare?.isSolflare ? window.solflare : null;
-    if (!adapter) throw new Error(`${walletType} nicht verfügbar (Extension installieren)`);
+    const adapter = window.solana?.isPhantom ? window.solana : null;
+    if (!adapter) throw new Error("Phantom nicht gefunden. Bitte Phantom Wallet installieren.");
 
     const resp = await adapter.connect();
     const pk58 = resp.publicKey.toString();
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
-    $("connectBtn").textContent  = walletType[0].toUpperCase()+walletType.slice(1);
-    $("walletMenu").classList.remove("active");
-    log("Wallet verbunden", { wallet: walletType, address: pk58 });
+    $("connectBtn").textContent  = "Phantom verbunden";
+    log("Wallet verbunden", { wallet: "phantom", address: pk58 });
 
     umi = createUmi(CFG.RPCs[CFG.currentRPC])
       .use(walletAdapterIdentity(adapter))
@@ -112,7 +123,7 @@ async function connectWallet(walletType) {
     adapter.on?.("disconnect", () => {
       log("Wallet getrennt");
       $("walletLabel").textContent = "nicht verbunden";
-      $("connectBtn").textContent  = "Wallet verbinden";
+      $("connectBtn").textContent  = "Mit Phantom verbinden";
       $("mintBtn").disabled = true;
       setStatus("Wallet getrennt. Bitte erneut verbinden.", "warn");
     });
@@ -121,20 +132,10 @@ async function connectWallet(walletType) {
   }
 }
 
-/* ========= CLAIMS ========= */
+/* ========= CLAIMS (optional, aktuell leer) ========= */
 let claimedSet = new Set();
 let availableIds = [];
 
-async function loadClaims() {
-  try {
-    // (Optional) später claims.json laden
-    claimedSet = new Set();
-  } catch (e) {
-    claimedSet = new Set();
-    log(`claims nicht geladen: ${e?.message || e}`);
-  }
-  recomputeAvailable();
-}
 function recomputeAvailable() {
   availableIds = [];
   for (let i = 0; i <= CFG.MAX_INDEX; i++) if (!claimedSet.has(i)) availableIds.push(i);
@@ -186,7 +187,7 @@ async function updatePreview() {
     } catch {}
   }
 
-  // Fallbacks aus CIDs (falls JSON nur teilweise ist)
+  // Fallbacks (falls dein JSON minimal ist)
   if (meta && !meta.image)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
@@ -225,7 +226,7 @@ function renderPreview(id, meta) {
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
 
-/* ========= MINT ========= */
+/* ========= MINT (minimal) ========= */
 async function doMint() {
   try {
     const mintBtn = $("mintBtn");
@@ -253,13 +254,18 @@ async function doMint() {
     const nftName = `Pi Pyramid #${id}`;
     const nftUri  = uriForId(id);
 
-    const collectionMint = umiPk(CFG.COLLECTION_MINT);
-    const collectionMetadata = findMetadataPda(umi, { mint: collectionMint });
-    const collectionEdition  = findMasterEditionPda(umi, { mint: collectionMint });
-    const tokenAccount = findAssociatedTokenPda(umi, { mint: mint.publicKey, owner: umi.identity.publicKey });
+    const collectionMint   = umiPk(CFG.COLLECTION_MINT);
+    const collectionMeta   = findMetadataPda(umi, { mint: collectionMint });
+    const collectionEdition= findMasterEditionPda(umi, { mint: collectionMint });
+
+    // Empfänger-Token-Account (ATA) für den Mintee
+    const tokenAccount = findAssociatedTokenPda(umi, {
+      mint: mint.publicKey,
+      owner: umi.identity.publicKey
+    });
 
     let builder = transactionBuilder()
-      .add(setComputeUnitLimit(umi, { units: 400_000 }))
+      .add(setComputeUnitLimit(umi, { units: 350_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
     if (donationLamports > 0) {
@@ -270,7 +276,7 @@ async function doMint() {
       }));
     }
 
-    // createV1 verwenden (public mint, ohne Collection-Verifizierung)
+    // Erstellen (public, Collection NICHT verifiziert) + Mint 1
     builder = builder.add(createV1(umi, {
       mint,
       name: nftName,
@@ -279,7 +285,7 @@ async function doMint() {
       creators: some([{ address: umiPk(CFG.CREATOR), verified: true, share: 100 }]),
       collection: some({ key: collectionMint, verified: false }),
       tokenStandard: CFG.TOKEN_STANDARD,
-      isMutable: true,
+      isMutable: true
     }));
 
     builder = builder.add(mintV1(umi, {
@@ -288,16 +294,17 @@ async function doMint() {
       token: tokenAccount,
       amount: 1,
       tokenOwner: umi.identity.publicKey,
-      tokenStandard: CFG.TOKEN_STANDARD,
+      tokenStandard: CFG.TOKEN_STANDARD
     }));
 
-    setStatus("Bitte im Wallet signieren…", "");
+    setStatus("Bitte im Wallet signieren…", "info");
     log("Sende Transaktion…");
 
+    // RPC-Fallback
     let result;
     for (let i = 0; i < CFG.RPCs.length; i++) {
       try {
-        umi.rpc = createUmi(CFG.RPCs[i]).rpc; // RPC-Fallback
+        umi.rpc = createUmi(CFG.RPCs[i]).rpc;
         result = await builder.sendAndConfirm(umi);
         break;
       } catch (e) {
@@ -324,39 +331,28 @@ async function doMint() {
 
 /* ========= ERRORS ========= */
 function handleError(context, e) {
-  console.error(context, e);
-  let msg = e?.message || String(e);
+  const msg = e?.message || String(e);
   let user = msg;
   if (/user rejected|reject/i.test(msg)) user = "Signierung abgebrochen";
   else if (/insufficient funds/i.test(msg)) user = "Unzureichendes SOL-Guthaben";
-  else if (/already in use/i.test(msg)) user = "ID bereits gemintet";
   setStatus(`❌ ${user}`, "err");
-  log(`error: ${msg}`);
+  log(`${context} ${msg}`);
 }
 
 /* ========= UI ========= */
 function wireUI() {
-  // Wallet-Dropdown
-  $("connectBtn")?.addEventListener("click", () => {
-    $("walletMenu").classList.toggle("active");
-  });
-  document.querySelectorAll(".wallet-option").forEach(b =>
-    b.addEventListener("click", () => connectWallet(b.dataset.wallet))
-  );
-
-  // Haupt-Buttons
+  $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
   $("randBtn")?.addEventListener("click", setRandomFreeId);
   $("tokenId")?.addEventListener("input", updatePreview);
 
-  // Logs
   $("toggleLogs")?.addEventListener("click", () => {
     const el = $("log");
     el.classList.toggle("hidden");
     $("toggleLogs").textContent = el.classList.contains("hidden") ? "Anzeigen" : "Ausblenden";
   });
 
-  // Spendenauswahl
+  // Spenden UI
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer = $("customDonationContainer");
   const customInput = $("customDonationInput");
@@ -406,16 +402,15 @@ async function updateBalance() {
       $("balanceLabel").classList.remove("low-balance");
     }
   } catch (e) {
-    log("balance error", e);
+    log("Balance Fehler", e);
   }
 }
 
 /* ========= START ========= */
 document.addEventListener("DOMContentLoaded", async () => {
+  recomputeAvailable();   // (claims aktuell leer)
   wireUI();
-  await loadClaims();
   await updatePreview();
 
-  // Debug-Hinweis: EVM-Wallets (MetaMask/Rabby) werfen teils Konsolenfehler (irrelevant).
-  // Teste am besten im privaten Fenster mit nur Phantom/Backpack/Solflare aktiv.
+  // Hinweis: Andere Browser-Wallets (EVM) können Konsolenwarnungen loggen; die sind hier irrelevant.
 });
