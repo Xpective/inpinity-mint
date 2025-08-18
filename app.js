@@ -102,14 +102,16 @@ let availableIds = [];
 
 /* ==================== RPC via Worker ==================== */
 async function pickRpcEndpoint() {
+  const payload = { jsonrpc:"2.0", id:1, method:"getLatestBlockhash", params:[{ commitment:"processed" }] };
   for (const url of CFG.RPCS) {
     try {
       const r = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestBlockhash", params: [{ commitment: "processed" }] }),
+        method:"POST",
+        headers:{ "content-type":"application/json" },
+        body: JSON.stringify(payload)
       });
       if (r.ok) return url;
+      if ([403,429].includes(r.status)) continue; // failover
     } catch {}
   }
   return CFG.RPCS[0];
@@ -175,10 +177,9 @@ async function connectPhantom() {
 async function updateBalance() {
   if (!phantom?.publicKey) return;
   try {
-    const conn = await ensureConnection();         // ← Worker-Connection!
+    const conn = await ensureConnection();
     const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString()));
-    const sol = lam / 1e9;
-    $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
+    $("balanceLabel").textContent = (lam/1e9).toFixed(4) + " SOL";
   } catch (e) {
     $("balanceLabel").textContent = "—";
     log("Balance nicht abrufbar (RPC).", String(e?.message||e));
@@ -369,7 +370,7 @@ async function doMint() {
       tokenStandard: CFG.TOKEN_STANDARD,
     }));
 
-    // ========== Transaktion bauen → VersionedTransaction ==========
+  // ========== Transaktion bauen → VersionedTransaction ==========
     const conn = await ensureConnection();
     let recentBlockhash = undefined;
     try {
@@ -398,7 +399,7 @@ async function doMint() {
       }))
     }).compileToV0Message();
 
-    const vtx = new VersionedTransaction(msg);
+    const vtx = new VersionedTransaction(msg);  
 
     // ========== Phantom sign+send ==========
     setStatus("Bitte im Wallet signieren…", "info");
