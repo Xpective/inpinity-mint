@@ -10,47 +10,56 @@ export interface Env {
   CLAIMS: KVNamespace;
 }
 
-/* ---------- CORS ---------- */
-const parseList = (s?: string) => (s || '').split(',').map(x=>x.trim()).filter(Boolean);
-const pickOrigin = (req: Request, list: string[]) => {
+/* ---------- helpers: CORS ---------- */
+const parseCsv = (s?: string) => (s || '').split(',').map(x => x.trim()).filter(Boolean);
+const pickOrigin = (req: Request, allowed: string[]) => {
   const o = req.headers.get('Origin') || '';
-  return o && list.includes(o) ? o : (list[0] || '*');
+  return o && allowed.includes(o) ? o : (allowed[0] || '*');
 };
-const corsHeaders = (origin: string, ctype='text/plain') => ({
+const cors = (origin: string, ctype = 'text/plain') => ({
   'Content-Type': ctype,
   'Access-Control-Allow-Origin': origin,
   'Vary': 'Origin, Accept-Encoding',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+  // solana-client MUSS erlaubt sein:
   'Access-Control-Allow-Headers': 'content-type,solana-client,accept,accept-language',
   'Access-Control-Max-Age': '86400',
 });
-const ok  = (data: unknown, origin: string) => new Response(JSON.stringify(data), { status: 200, headers: corsHeaders(origin, 'application/json') });
-const txt = (msg: string, origin: string, status=200) => new Response(msg, { status, headers: corsHeaders(origin, 'text/plain') });
+const ok  = (data: unknown, origin: string) =>
+  new Response(JSON.stringify(data), { status: 200, headers: cors(origin, 'application/json') });
+const txt = (msg: string, origin: string, status = 200) =>
+  new Response(msg, { status, headers: cors(origin, 'text/plain') });
 
-/* ---------- RPC ---------- */
-const forwardRpcOnce = (endpoint: string, body: unknown) =>
-  fetch(endpoint, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+/* ---------- RPC forward mit robustem Fallback ---------- */
+const isRetryable = (s: number) => s === 403 || s === 429 || (s >= 500 && s <= 599);
+const callRpc = (endpoint: string, body: unknown) =>
+  fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
-const isRetryable = (s: number) => s===403 || s===429 || (s>=500 && s<=599);
-const forwardRpc = async (env: Env, body: unknown) => {
-  let r: Response;
-  try { r = await forwardRpcOnce(env.UPSTREAM_RPC, body); } catch { r = new Response('UPSTREAM error', { status: 599 }); }
-  if (!isRetryable(r.status)) return r;
-  if (env.BACKUP_RPC) {
+async function forwardRpc(env: Env, body: unknown): Promise<Response> {
+  // Versuche zuerst BACKUP (weniger häufig geblockt), dann UPSTREAM.
+  const order = [env.BACKUP_RPC, env.UPSTREAM_RPC].filter(Boolean) as string[];
+  let last: Response | null = null;
+
+  for (const ep of order) {
     try {
-      const r2 = await forwardRpcOnce(env.BACKUP_RPC, body);
-      if (r2.ok || !isRetryable(r2.status)) return r2;
-      return r2;
-    } catch {}
+      const r = await callRpc(ep, body);
+      if (!isRetryable(r.status)) return r; // ok oder harter Fehler (z.B. 400)
+      last = r; // retryable → probiere nächsten
+    } catch {
+      // Netzfehler → versuche nächsten
+    }
   }
-  return r;
-};
+  return last ?? new Response('No RPC reachable', { status: 599 });
+}
 
-/* ---------- Claims ---------- */
-const getClaims = async (env: Env): Promise<number[]> => {
+/* ---------- Claims (GET/POST) ---------- */
+async function getClaims(env: Env): Promise<number[]> {
+  // optional Remote-Quelle
   if (env.REMOTE_CLAIMS_URL) {
     try {
-      const r = await fetch(env.REMOTE_CLAIMS_URL, { cf:{ cacheTtl:60, cacheEverything:true } as RequestInitCfProperties });
+      const r = await fetch(env.REMOTE_CLAIMS_URL, {
+        cf: { cacheTtl: 60, cacheEverything: true } as RequestInitCfProperties
+      });
       if (r.ok) {
         const d = await r.json() as any;
         if (Array.isArray(d)) return d;
@@ -58,53 +67,77 @@ const getClaims = async (env: Env): Promise<number[]> => {
       }
     } catch {}
   }
-  const raw = await env.CLAIMS.get('claimed');
-  if (!raw) return [];
+  // KV-Fallback
   try {
+    const raw = await env.CLAIMS.get('claimed');
+    if (!raw) return [];
     const j = JSON.parse(raw);
     if (Array.isArray(j)) return j;
     if (Array.isArray(j?.claimed)) return j.claimed;
   } catch {}
   return [];
-};
-const addClaim = async (env: Env, i: number) => {
+}
+
+async function addClaim(env: Env, i: number) {
   const arr = await getClaims(env);
   if (!arr.includes(i)) arr.push(i);
   await env.CLAIMS.put('claimed', JSON.stringify(arr));
-};
+}
 
 /* ---------- Handler ---------- */
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    const allow = parseList(env.ALLOWED_ORIGINS);
-    const origin = pickOrigin(req, allow);
+    const allowed = parseCsv(env.ALLOWED_ORIGINS);
+    const origin  = pickOrigin(req, allowed);
 
-    if (req.method === 'OPTIONS')
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
-
-    if (url.pathname === '/' || url.pathname === '/health')
-      return txt('OK: inpinity-rpc-proxy', origin);
-
-    if (url.pathname === '/debug')
-      return ok({ upstream: env.UPSTREAM_RPC, backup: env.BACKUP_RPC||null, allowed: env.ALLOWED_ORIGINS||'' }, origin);
-
-    if (url.pathname === '/rpc' && req.method === 'POST') {
-      let body: any; try { body = await req.json(); } catch { return txt('Bad JSON', origin, 400); }
-      const resp = await forwardRpc(env, body);
-      const data = await resp.text();
-      return new Response(data, { status: resp.status, headers: corsHeaders(origin, 'application/json') });
+    // CORS Preflight
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: cors(origin) });
     }
 
+    // Health
+    if (url.pathname === '/' || url.pathname === '/health') {
+      return txt('OK: inpinity-rpc-proxy', origin);
+    }
+
+    // Debug
+    if (url.pathname === '/debug') {
+      return ok({
+        upstream: env.UPSTREAM_RPC,
+        backup: env.BACKUP_RPC || null,
+        allowed: env.ALLOWED_ORIGINS || ''
+      }, origin);
+    }
+
+    // JSON-RPC
+    if (url.pathname === '/rpc' && req.method === 'POST') {
+      let body: unknown;
+      try { body = await req.json(); }
+      catch { return txt('Bad JSON', origin, 400); }
+
+      const resp = await forwardRpc(env, body);
+      const data = await resp.text();
+      return new Response(data, { status: resp.status, headers: cors(origin, 'application/json') });
+    }
+
+    // Claims (GET/POST)
     if (url.pathname === '/claims') {
-      if (req.method === 'GET')  return ok({ claimed: await getClaims(env) }, origin);
+      if (req.method === 'GET') {
+        const claimed = await getClaims(env);
+        return ok({ claimed }, origin);
+      }
       if (req.method === 'POST') {
         try {
           const { index } = await req.json() as { index?: unknown };
-          if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return txt('Invalid index', origin, 400);
+          if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+            return txt('Invalid index', origin, 400);
+          }
           await addClaim(env, index);
-          return ok({ ok:true }, origin);
-        } catch { return txt('Bad JSON', origin, 400); }
+          return ok({ ok: true }, origin);
+        } catch {
+          return txt('Bad JSON', origin, 400);
+        }
       }
       return txt('Method not allowed', origin, 405);
     }
