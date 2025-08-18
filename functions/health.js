@@ -1,4 +1,4 @@
-// functions/health.js – GET /api/health
+// functions/health.js
 export const onRequestGet = async () => {
   const upstream = "https://api.mainnet-beta.solana.com";
   const payload = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" });

@@ -1,0 +1,4 @@
+name = "solana-proxy"
+main = "src/worker.js"
+account_id = "ee57d3036a25f352ab089a94066a03c1"  # deine ID
+compatibility_date = "2025-08-18"

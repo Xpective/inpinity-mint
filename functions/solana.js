@@ -11,13 +11,13 @@ export const onRequestOptions = async () => {
 };
 
 export const onRequestPost = async ({ request }) => {
-  const upstream = "https://api.mainnet-beta.solana.com"; // originaler Solana RPC
+  const upstream = "https://api.mainnet-beta.solana.com";
   const body = await request.arrayBuffer();
 
   const resp = await fetch(upstream, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body
+    body,
   });
 
   const buf = await resp.arrayBuffer();
