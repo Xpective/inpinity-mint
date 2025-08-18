@@ -337,6 +337,7 @@ function handleError(context, e) {
 }
 
 /* ========= UI ========= */
+/* ========= UI ========= */
 function wireUI() {
   // Wallet-Dropdown
   $("connectBtn")?.addEventListener("click", () => {
@@ -397,7 +398,33 @@ function wireUI() {
   applyDonationSelection();
   updateEstimatedCost();
 }
+
+async function updateBalance() {
+  if (!umi) return;
+  try {
+    const bal = await umi.rpc.getBalance(umi.identity.publicKey);
+    const sol = Number(bal.basisPoints) / 1e9;
+    $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
+
+    const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
+    if (sol < total * 1.2) {
+      $("balanceLabel").classList.add("low-balance");
+      setStatus(`⚠️ Niedriges Guthaben (${sol.toFixed(4)} SOL)`, "warn");
+    } else {
+      $("balanceLabel").classList.remove("low-balance");
+    }
+  } catch (e) {
+    log("balance error", e);
+  }
 }
+
+/* ========= START ========= */
+document.addEventListener("DOMContentLoaded", async () => {
+  wireUI();
+  await loadClaims();
+  await updatePreview();
+});
+
 
 async function updateBalance() {
   if (!umi) return;
