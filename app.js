@@ -1,9 +1,10 @@
 /* ========= KONFIG ========= */
 const CFG = {
   RPCs: [
-    "https://solana-mainnet.g.alchemy.com/v2/cBEi0C9aUmPjjBTGGJ02-9",
+    // Nur öffentliche, schlüssel-freie Endpoints:
     "https://api.mainnet-beta.solana.com",
-    "https://rpc.ankr.com/solana"
+    "https://rpc.ankr.com/solana",
+    "https://solana.public-rpc.com"
   ],
   currentRPC: 0,
 
