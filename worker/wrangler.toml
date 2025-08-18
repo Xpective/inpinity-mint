@@ -11,3 +11,6 @@ REMOTE_CLAIMS_URL = ""
 [[kv_namespaces]]
 binding = "CLAIMS"
 id = "139ec0627b02429db4507c14b5a3a1fd"
+
+[site]
+bucket = "./mint"

@@ -1,23 +1,33 @@
 /* ==================== KONFIG ==================== */
 const CFG = {
- RPCs: [
-    "/api/solana",                          // ← unsere Pages Function (gleiche Origin, kein CORS)
-    "https://api.mainnet-beta.solana.com"   // ← Fallback
+  // RPC über deinen Worker (primär Domain-Route, fallback workers.dev):
+  RPCS: [
+    "https://api.inpinity.online/rpc",
+    "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc"
   ],
+  CLAIMS: [
+    "https://api.inpinity.online/claims",
+    "https://inpinity-rpc-proxy.s-plat.workers.dev/claims"
+  ],
+
+  // Treasury/Creator (fixe Mint-Fee + optionale Donations)
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
+  MINT_FEE_SOL: 0.02,
+
+  // Optional: Collection (kannst du später on-chain verifizieren)
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
 
-  ROYALTY_BPS: 700,
+  ROYALTY_BPS: 700, // 7 %
+  TOKEN_STANDARD: 4, // Metaplex V1
   MAX_INDEX: 9999,
-  BASE_ESTIMATED_COST: 0.003,
-  TOKEN_STANDARD: 4, // NFT
 
-  // Deine IPFS CIDs
+  // IPFS
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
-  MP4_BASE_CID:  "bafybeic6dwzp2lk3xf7wylsxo5kqqmvcgqlf6pp4v4ov3e2x6evrjipbam",
+  // Falls im JSON kein image/animation_url ist, fallback:
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
+  MP4_BASE_CID:  "",
 
-  // Dein Gateway zuerst
+  // Gateways (dein Gateway zuerst)
   GATEWAYS: [
     "https://ipfs.inpinity.online/ipfs",
     "https://ipfs.io/ipfs",
@@ -26,34 +36,22 @@ const CFG = {
 };
 
 /* ==================== IMPORTS ==================== */
-// UMI-Kern + Wallet-Adapter-Bridge
-import { createUmi, generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports } from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
+import {
+  createUmi, generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports
+} from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
 import { createUmi as createUmiDefaults } from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 
-// Token Metadata Instruktionen
 import {
-  mplTokenMetadata,
-  createV1,
-  mintV1,
-  findMasterEditionPda
+  mplTokenMetadata, createV1, mintV1, findMasterEditionPda
 } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
 
-// Toolbox (Compute Units + SOL-Transfer + ATA PDA)
 import {
-  setComputeUnitLimit,
-  setComputeUnitPrice,
-  transferSol,
-  findAssociatedTokenPda
+  setComputeUnitLimit, setComputeUnitPrice, transferSol, findAssociatedTokenPda
 } from "https://esm.sh/@metaplex-foundation/mpl-toolbox@0.10.0?bundle";
 
-// Web3.js NUR für (de)serialisieren & Phantom signAndSend
 import {
-  Connection,
-  PublicKey,
-  VersionedTransaction,
-  TransactionMessage,
-  Keypair
+  Connection, PublicKey, VersionedTransaction, TransactionMessage
 } from "https://esm.sh/@solana/web3.js@1.95.3";
 
 /* ==================== HELPERS ==================== */
@@ -65,21 +63,54 @@ const log = (msg, obj) => {
   el.textContent += `[${time}] ${msg}${obj ? " " + JSON.stringify(obj,null,2) : ""}\n`;
   el.scrollTop = el.scrollHeight;
 };
-const setSpin = (on) => { const sp = document.querySelector(".spinner"); const lbl = document.querySelector(".btn-label"); if (!sp || !lbl) return; sp.hidden = !on; lbl.style.opacity = on ? 0.75 : 1; };
-
-const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
-const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
+const setSpin = (on) => {
+  const sp = document.querySelector(".spinner");
+  const lbl = document.querySelector(".btn-label");
+  if (!sp || !lbl) return;
+  sp.hidden = !on; lbl.style.opacity = on ? 0.75 : 1;
+};
 const toHttp = (u) => {
   if (!u) return u;
   if (u.startsWith("ipfs://")) return `${CFG.GATEWAYS[0]}/${u.replace("ipfs://","").replace(/^ipfs\//,"")}`;
   if (u.startsWith("/ipfs/"))  return `${CFG.GATEWAYS[0]}${u}`;
   return u;
 };
+const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
+const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
+
+function firstOkUrl(urls) {
+  let i = 0;
+  return async function doFetch(input, init) {
+    while (i < urls.length) {
+      const base = urls[i];
+      try {
+        const res = await fetch(base, init);
+        if (res.status !== 403 && res.status !== 429 && res.status < 500) return res;
+      } catch {}
+      i++;
+    }
+    // letzter Versuch mit erster URL — für debugging
+    return fetch(urls[0], init);
+  };
+}
 
 /* ==================== STATE ==================== */
 let umi = null;
 let phantom = null;
+let rpcConn = null; // über Worker
 let originalBtnText = "";
+let claimedSet = new Set();
+let availableIds = [];
+
+/* ==================== RPC via Worker ==================== */
+function buildConnection() {
+  // web3.js Connection auf deinen Worker (erste erreichbare)
+  for (const e of CFG.RPCS) {
+    // kein Ping hier – wir probieren beim ersten call
+    return new Connection(e, { commitment: "confirmed" });
+  }
+  return new Connection(CFG.RPCS[0], { commitment: "confirmed" });
+}
 
 /* ==================== UI: Spenden ==================== */
 function getSelectedDonation() {
@@ -92,35 +123,35 @@ function getSelectedDonation() {
   return parseFloat(sel.value);
 }
 function updateEstimatedCost() {
-  const total = CFG.BASE_ESTIMATED_COST + getSelectedDonation();
+  const total = 0.02 + getSelectedDonation(); // fixe 0.02 SOL + Donation
   const lbl = $("costLabel"); if (lbl) lbl.textContent = `≈ ${total.toFixed(3)} SOL`;
 }
 
-/* ==================== WALLET (nur Phantom) ==================== */
+/* ==================== WALLET (Phantom only) ==================== */
 async function connectPhantom() {
   try {
-    phantom = window.solana?.isPhantom ? window.solana : null;
-    if (!phantom) throw new Error("Phantom nicht gefunden. Bitte die Phantom Browser-Extension installieren.");
+    const w = window.solana;
+    if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
 
-    const resp = await phantom.connect(); // öffnet Phantom-Popup
+    const resp = await w.connect(); // Popup
+    phantom = w;
+
+    // UMI (kein Broadcast nötig, wir bauen nur Instruktionen)
+    // Ein RPC wird von UMI nicht zwingend benötigt – setzen wir aber auf deinen Worker für evtl. lookups:
+    umi = createUmiDefaults(CFG.RPCS[0]).use(walletAdapterIdentity(phantom)).use(mplTokenMetadata());
+
+    rpcConn = buildConnection();
+
     const pk58 = resp.publicKey.toString();
-
-    // UMI initialisieren (ohne HTTP-RPC zum Senden – nur für Instruktionsbau)
-    umi = createUmiDefaults(CFG.SOLANA_MAINNET_RPC) // default setup – nutzen wir NICHT zum Broadcast
-      .use(walletAdapterIdentity(phantom))
-      .use(mplTokenMetadata());
-
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
     $("connectBtn").textContent  = "Phantom verbunden";
     $("mintBtn").disabled = false;
     setStatus("Wallet verbunden. Bereit zum Minten.", "ok");
     log("Wallet verbunden", { address: pk58 });
 
-    // Balance anzeigen (best effort über offizielles RPC)
     await updateBalance();
 
     phantom.on?.("disconnect", () => {
-      log("Wallet getrennt");
       $("walletLabel").textContent = "nicht verbunden";
       $("connectBtn").textContent  = "Mit Phantom verbinden";
       $("mintBtn").disabled = true;
@@ -131,30 +162,44 @@ async function connectPhantom() {
   }
 }
 
-/* ==================== BALANCE (nur offizielles RPC, graceful) ==================== */
 async function updateBalance() {
   if (!phantom?.publicKey) return;
   try {
-    const conn = new Connection(CFG.SOLANA_MAINNET_RPC, { commitment: "confirmed" });
-    const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString())); // kann 403/429 werfen
+    const lam = await rpcConn.getBalance(new PublicKey(phantom.publicKey.toString()));
     const sol = lam / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
-    const warn = sol < (CFG.BASE_ESTIMATED_COST + getSelectedDonation()) * 1.2;
-    if (warn) setStatus(`⚠️ Niedriges Guthaben (${sol.toFixed(4)} SOL)`, "warn");
   } catch (e) {
-    // Nur Anzeige – Mint funktioniert trotzdem via Phantom
     $("balanceLabel").textContent = "—";
-    log("Balance nicht abrufbar (offizielles RPC hat blockiert).", String(e?.message||e));
+    log("Balance nicht abrufbar (RPC).", String(e?.message||e));
   }
 }
 
-/* ==================== CLAIMS (optional leer) ==================== */
-let claimedSet = new Set();
-let availableIds = [];
+/* ==================== CLAIMS (Worker) ==================== */
+function claimsUrl() { return CFG.CLAIMS.find(Boolean); }
+
+async function fetchClaims() {
+  try {
+    const r = await fetch(claimsUrl());
+    if (!r.ok) return [];
+    const j = await r.json();
+    const arr = Array.isArray(j) ? j : Array.isArray(j.claimed) ? j.claimed : j.claimed ?? [];
+    return arr;
+  } catch { return []; }
+}
+async function markClaimed(i) {
+  try {
+    await fetch(claimsUrl(), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ index: i }) });
+  } catch {}
+}
 function recomputeAvailable() {
   availableIds = [];
   for (let i = 0; i <= CFG.MAX_INDEX; i++) if (!claimedSet.has(i)) availableIds.push(i);
   const el = $("freeCounter"); if (el) el.textContent = `${availableIds.length} / ${CFG.MAX_INDEX + 1}`;
+}
+async function bootstrapClaims() {
+  const arr = await fetchClaims();
+  claimedSet = new Set(arr);
+  recomputeAvailable();
 }
 async function isIdAvailable(id) {
   if (claimedSet.has(id)) return false;
@@ -199,8 +244,8 @@ async function updatePreview() {
     } catch {}
   }
 
-  if (meta && !meta.image)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
-  if (meta && !meta.animation_url) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
+  if (meta && !meta.image && CFG.PNG_BASE_CID)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
+  if (meta && !meta.animation_url && CFG.MP4_BASE_CID) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
   if (!meta) {
     $("uriStatus").textContent = "⚠️ Metadaten nicht gefunden";
@@ -252,13 +297,12 @@ async function doMint() {
     const donation = getSelectedDonation();
     const donationLamports = Math.round(donation * 1e9);
 
-    // (Optional) Balance anzeigen – fehltschlag ist ok
-    await updateBalance();
+    await updateBalance().catch(()=>{});
 
     setStatus("Baue Transaktion...", "info");
     log("Starte Mint", { id, donation });
 
-    // ========== UMI: Instruktionen bauen ==========
+    // ========== UMI: Instruktionen ==========
     const mint = generateSigner(umi);
     const nftName = `Pi Pyramid #${id}`;
     const nftUri  = uriForId(id);
@@ -271,6 +315,14 @@ async function doMint() {
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 })); // kleine Priority Fee
 
+    // 0) Fixe Creator-Fee 0.02 SOL
+    builder = builder.add(transferSol(umi, {
+      from: umi.identity,
+      to: umiPk(CFG.CREATOR),
+      amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9))
+    }));
+
+    // 0b) Optionale Spende
     if (donationLamports > 0) {
       builder = builder.add(transferSol(umi, {
         from: umi.identity,
@@ -279,17 +331,19 @@ async function doMint() {
       }));
     }
 
+    // 1) NFT anlegen (unverified creator; du verifizierst später on-chain)
     builder = builder.add(createV1(umi, {
       mint,
       name: nftName,
       uri: nftUri,
       sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-      creators: some([{ address: umiPk(CFG.CREATOR), verified: true, share: 100 }]),
+      creators: some([{ address: umiPk(CFG.CREATOR), verified: false, share: 100 }]),
       collection: some({ key: collectionMint, verified: false }),
       tokenStandard: CFG.TOKEN_STANDARD,
       isMutable: true,
     }));
 
+    // 2) Eine Edition minten an den Minter
     builder = builder.add(mintV1(umi, {
       mint: mint.publicKey,
       authority: umi.identity,
@@ -299,52 +353,52 @@ async function doMint() {
       tokenStandard: CFG.TOKEN_STANDARD,
     }));
 
-    // ========== Transaktion vorbereiten (ohne RPC-Broadcast) ==========
-    // 1) Aktuellen blockhash holen – via Phantom Connection-Relay umgehen wir hier Connection:
-    // Wir nehmen den Blockhash via offizieller Connection. Falls 403: informiere, und Phantom sendet trotzdem.
+    // ========== Transaktion bauen → VersionedTransaction ==========
+    // Hole Blockhash über deinen Worker-RPC (kein 403)
     let recentBlockhash = undefined;
     try {
-      const conn = new Connection(CFG.SOLANA_MAINNET_RPC, { commitment: "confirmed" });
-      const { blockhash } = await conn.getLatestBlockhash("finalized");
+      const { blockhash } = await rpcConn.getLatestBlockhash("finalized");
       recentBlockhash = blockhash;
     } catch (e) {
-      log("Blockhash vom offiziellen RPC nicht verfügbar (fahre fort, Phantom sendet).", String(e?.message||e));
+      log("Blockhash via Worker-RPC nicht verfügbar – Phantom sendet trotzdem.", String(e?.message||e));
     }
 
-    // 2) UMI-Builder -> web3.js VersionedTransaction
-    const built = await builder.build(umi); // UmiTransaction
-    const vtx = new VersionedTransaction(new TransactionMessage({
-      payerKey: new PublicKey(umi.identity.publicKey.toString()),
+    const built = await builder.build(umi);
+    // Mapping der UMI-Message → v0 message (vereinfachtes Mapping, ausreichend hier)
+    const payer = new PublicKey(umi.identity.publicKey.toString());
+    const msg = new TransactionMessage({
+      payerKey: payer,
       recentBlockhash: recentBlockhash ?? base58.encode(built.getTransaction().message.recentBlockhash ?? new Uint8Array()),
-      instructions: built.getTransaction().message.compiledInstructions.map(ix => ({
-        programId: new PublicKey(base58.encode(built.getTransaction().message.staticAccountKeys[ix.programIdIndex])),
-        keys: ix.accountKeyIndexes.map(idx => ({
-          pubkey: new PublicKey(base58.encode(built.getTransaction().message.staticAccountKeys[idx])),
-          isSigner: false,
-          isWritable: true
+      instructions: built.getInstructions().map(ix => ({
+        programId: new PublicKey(ix.getProgramAddress().toString()),
+        keys: ix.getAccountMetas().map(m => ({
+          pubkey: new PublicKey(m.address.toString()),
+          isSigner: !!m.isSigner,
+          isWritable: !!m.isWritable
         })),
-        data: built.getTransaction().message.compiledInstructionsData ? built.getTransaction().message.compiledInstructionsData : new Uint8Array()
+        data: ix.getDataBytes()
       }))
-    }).compileToV0Message());
+    }).compileToV0Message();
 
-    // 3) Phantom sign+send (nutzt Phantom Relay; kein eigener RPC nötig)
+    const vtx = new VersionedTransaction(msg);
+
+    // ========== Phantom sign+send ==========
     setStatus("Bitte im Wallet signieren…", "info");
     const { signature } = await phantom.signAndSendTransaction(vtx);
     log("gesendet", { signature });
 
     setStatus(`⏳ Bestätige Transaktion…`, "info");
-    // Bestätigung (best effort) über offizielles RPC
     try {
-      const conn = new Connection(CFG.SOLANA_MAINNET_RPC, { commitment: "confirmed" });
-      await conn.confirmTransaction(signature, "confirmed");
+      await rpcConn.confirmTransaction(signature, "confirmed");
     } catch (e) {
-      log("Bestätigung via offizielles RPC fehlgeschlagen (Phantom hat trotzdem gesendet).", String(e?.message||e));
+      log("Bestätigung via Worker-RPC fehlgeschlagen (okay).", String(e?.message||e));
     }
 
-    const link = `https://solscan.io/tx/${signature}?cluster=mainnet`;
-    setStatus(`✅ Mint erfolgreich! <a href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
+    const link = `https://solscan.io/tx/${signature}`;
+    setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
 
-    // Markiere ID lokal & wähle neue
+    // markiere ID in Claims
+    await markClaimed(id);
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
   } catch (e) {
@@ -378,7 +432,7 @@ function wireUI() {
   $("randBtn")?.addEventListener("click", setRandomFreeId);
   $("tokenId")?.addEventListener("input", updatePreview);
 
-  // Spenden-Pills
+  // Donation-Pills
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer = $("customDonationContainer");
   const customInput = $("customDonationInput");
@@ -389,8 +443,8 @@ function wireUI() {
     if (!checked) return;
     const pill = checked.closest(".pill");
     if (pill) pill.classList.add("active");
-    if (checked.value === "custom") customContainer.classList.add("visible");
-    else customContainer.classList.remove("visible");
+    if (checked.value === "custom") customContainer.style.display = "inline-flex";
+    else customContainer.style.display = "none";
     updateEstimatedCost();
   };
 
@@ -416,6 +470,9 @@ function wireUI() {
 /* ==================== START ==================== */
 document.addEventListener("DOMContentLoaded", async () => {
   wireUI();
-  recomputeAvailable();
-  await updatePreview();
+  await bootstrapClaims();
+  // first preview:
+  const inp = $("tokenId");
+  inp.value = "0"; // auto
+  await setRandomFreeId();
 });
