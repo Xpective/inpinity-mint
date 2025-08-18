@@ -1,3 +1,6 @@
+/* ==================== BUILD-ID (für Cache & Debug) ==================== */
+const BUILD_TAG = "mint-v5";
+
 /* ==================== KONFIG ==================== */
 const CFG = {
   // NUR Worker (primär Domain-Route, Fallback workers.dev)
@@ -10,24 +13,18 @@ const CFG = {
     "https://inpinity-rpc-proxy.s-plat.workers.dev/claims"
   ],
 
-  // Treasury/Creator (fixe Mint-Fee + optionale Donations)
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   MINT_FEE_SOL: 0.02,
-
-  // Optional: Collection (später on-chain verifizieren)
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
 
-  ROYALTY_BPS: 700, // 7 %
-  TOKEN_STANDARD: 4, // Metaplex V1
+  ROYALTY_BPS: 700,
+  TOKEN_STANDARD: 4,
   MAX_INDEX: 9999,
 
-  // IPFS
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
-  // Fallbacks falls im JSON kein image/animation_url gesetzt ist:
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
-  // Gateways (dein Gateway zuerst)
   GATEWAYS: [
     "https://ipfs.inpinity.online/ipfs",
     "https://ipfs.io/ipfs",
@@ -53,6 +50,23 @@ import {
 import {
   Connection, PublicKey, VersionedTransaction, TransactionMessage
 } from "https://esm.sh/@solana/web3.js@1.95.3";
+
+/* ==================== FETCH-NOTBREMSE (Rewrite) ==================== */
+(function installFetchRewrite(){
+  const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
+  const TARGET  = CFG.RPCS[0]; // dein Worker
+  const _fetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = typeof input === "string" ? input : (input?.url || "");
+      if (MAINNET.test(url)) {
+        console.warn("[rewrite] redirect mainnet-beta → worker", { from: url, to: TARGET });
+        return _fetch(TARGET, init);
+      }
+    } catch {}
+    return _fetch(input, init);
+  };
+})();
 
 /* ==================== HELPERS ==================== */
 const $ = (id) => document.getElementById(id);
@@ -87,7 +101,6 @@ let claimedSet = new Set();
 let availableIds = [];
 
 /* ==================== RPC via Worker ==================== */
-// Ping jeden RPC-Endpoint mit einem minimalen JSON-RPC Call und nimm den ersten, der OK ist.
 async function pickRpcEndpoint() {
   for (const url of CFG.RPCS) {
     try {
@@ -99,15 +112,13 @@ async function pickRpcEndpoint() {
       if (r.ok) return url;
     } catch {}
   }
-  // Fallback: nimm die erste URL (sollte dein Domain-Worker sein)
   return CFG.RPCS[0];
 }
-
 async function ensureConnection() {
   if (rpcConn) return rpcConn;
   const chosen = await pickRpcEndpoint();
   rpcConn = new Connection(chosen, { commitment: "confirmed" });
-  log("RPC aktiv", { rpc: chosen });
+  log("RPC aktiv", { rpc: chosen, build: BUILD_TAG });
   return rpcConn;
 }
 
@@ -135,7 +146,7 @@ async function connectPhantom() {
     const resp = await w.connect(); // Popup
     phantom = w;
 
-    // UMI: wir setzen als RPC direkt deinen Worker (1. Eintrag)
+    // UMI auf deinen Worker
     umi = createUmiDefaults(CFG.RPCS[0]).use(walletAdapterIdentity(phantom)).use(mplTokenMetadata());
 
     // web3 Connection über Worker initialisieren
@@ -145,7 +156,7 @@ async function connectPhantom() {
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
     $("connectBtn").textContent  = "Phantom verbunden";
     $("mintBtn").disabled = false;
-    setStatus("Wallet verbunden. Bereit zum Minten.", "ok");
+    setStatus(`Wallet verbunden (${BUILD_TAG}). Bereit zum Minten.`, "ok");
     log("Wallet verbunden", { address: pk58 });
 
     await updateBalance();
@@ -164,7 +175,7 @@ async function connectPhantom() {
 async function updateBalance() {
   if (!phantom?.publicKey) return;
   try {
-    const conn = await ensureConnection();
+    const conn = await ensureConnection();         // ← Worker-Connection!
     const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString()));
     const sol = lam / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
@@ -318,10 +329,10 @@ async function doMint() {
 
     let builder = transactionBuilder()
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
-      .add(setComputeUnitPrice(umi, { microLamports: 5_000 })); // kleine Priority Fee
+      .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
     // 0) Fixe Creator-Fee 0.02 SOL
-    builder = builder.add(transferSol(imiFix(umi), {
+    builder = builder.add(transferSol(umi, {
       from: umi.identity,
       to: umiPk(CFG.CREATOR),
       amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9))
@@ -336,7 +347,7 @@ async function doMint() {
       }));
     }
 
-    // 1) NFT anlegen (unverified creator; du verifizierst später on-chain)
+    // 1) NFT anlegen (unverified; später on-chain verifizieren)
     builder = builder.add(createV1(umi, {
       mint,
       name: nftName,
@@ -348,7 +359,7 @@ async function doMint() {
       isMutable: true,
     }));
 
-    // 2) Eine Edition minten an den Minter
+    // 2) Mint an den Minter
     builder = builder.add(mintV1(umi, {
       mint: mint.publicKey,
       authority: umi.identity,
@@ -370,7 +381,6 @@ async function doMint() {
 
     const built = await builder.build(umi);
 
-    // Mapping der UMI-Message → v0 message
     const payer = new PublicKey(umi.identity.publicKey.toString());
     const msg = new TransactionMessage({
       payerKey: payer,
@@ -405,7 +415,6 @@ async function doMint() {
     const link = `https://solscan.io/tx/${signature}`;
     setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
 
-    // markiere ID in Claims
     await markClaimed(id);
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
@@ -421,9 +430,6 @@ async function doMint() {
     }
   }
 }
-
-// kleine UMI-Sicherungsfunktion (manche Bundler mergen tree-shaking zu aggressiv)
-function imiFix(u){ return u; }
 
 /* ==================== ERROR HANDLING ==================== */
 function handleError(context, e) {
@@ -479,10 +485,10 @@ function wireUI() {
 
 /* ==================== START ==================== */
 document.addEventListener("DOMContentLoaded", async () => {
+  log("System initialisiert", { build: BUILD_TAG, rpcs: CFG.RPCS });
   wireUI();
   await bootstrapClaims();
-  // erste Vorschau & freie ID
   const inp = $("tokenId");
-  inp.value = "0"; // auto
+  inp.value = "0";
   await setRandomFreeId();
 });
