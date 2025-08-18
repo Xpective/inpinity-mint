@@ -1,8 +1,9 @@
 /* ==================== KONFIG ==================== */
 const CFG = {
-  // Offizielles Solana RPC – nur für BALANCE (Mint/Broadcast laufen über Phantom)
-  SOLANA_MAINNET_RPC: "https://api.mainnet-beta.solana.com",
-
+ RPCs: [
+    "/api/solana",                          // ← unsere Pages Function (gleiche Origin, kein CORS)
+    "https://api.mainnet-beta.solana.com"   // ← Fallback
+  ],
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
 
