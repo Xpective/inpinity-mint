@@ -39,21 +39,11 @@ const CFG = {
 
 
 /* ==================== IMPORTS (Solana) ==================== */
-import {
-  Connection, PublicKey, Transaction, SystemProgram,
-  Keypair, ComputeBudgetProgram
-} from "https://esm.sh/@solana/web3.js@1.95.3";
+// web3.js hängt global an window.solanaWeb3
+const { Connection, PublicKey, Transaction, SystemProgram } = window.solanaWeb3;
 
-import {
-  getMinimumBalanceForRentExemptMint,
-  MINT_SIZE,
-  TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  createInitializeMint2Instruction,
-  createMintToInstruction,
-} from "https://esm.sh/@solana/spl-token@0.4.9";
+// mpl-token-metadata hängt global an window.mplTokenMetadata
+const tm = window.mplTokenMetadata;
 
 /* ==================== Metaplex TM Loader (robust: ESM → UMD) ==================== */
 let tm = null;
