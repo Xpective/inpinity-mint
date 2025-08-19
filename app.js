@@ -34,7 +34,6 @@ const CFG = {
 /* ==================== IMPORTS ==================== */
 // Web3.js direkt importieren
 import { Connection, PublicKey, Transaction, SystemProgram, Keypair, sendAndConfirmTransaction } from "https://esm.sh/@solana/web3.js@1.95.3";
-import { createCreateMetadataAccountV3Instruction, createCreateMasterEditionV3Instruction, createMintNewEditionFromMasterEditionViaTokenInstruction } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
 import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddress, createMintToInstruction, getAccount, MINT_SIZE, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
