@@ -34,8 +34,8 @@ const CFG = {
 /* ==================== IMPORTS ==================== */
 // Web3.js + SPL + Metaplex (ohne Umi)
 import {
-  Connection, PublicKey, Transaction, SystemProgram, Keypair,
-  ComputeBudgetProgram
+  Connection, PublicKey, Transaction, SystemProgram,
+  Keypair, ComputeBudgetProgram
 } from "https://esm.sh/@solana/web3.js@1.95.3";
 
 import {
@@ -43,20 +43,23 @@ import {
   MINT_SIZE,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
-  createInitializeMint2Instruction,
-  createAssociatedTokenAccountInstruction,
   getAssociatedTokenAddress,
-  createMintToInstruction
+  createAssociatedTokenAccountInstruction,
+  createInitializeMint2Instruction,
+  createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
+// Namespace-Import der Token-Metadata-Instruction-Fabrikfunktionen
+// ✅ neu – ganz oben bei den Imports einfügen
 import {
   createCreateMetadataAccountV3Instruction,
   createCreateMasterEditionV3Instruction,
-  createVerifySizedCollectionItemInstruction
-} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
-
-import { Buffer } from "https://esm.sh/buffer@6.0.3";
-import BN from "https://esm.sh/bn.js@4.12.0";
+  createSetAndVerifySizedCollectionItemInstruction,
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?exports=createCreateMetadataAccountV3Instruction,createCreateMasterEditionV3Instruction,createSetAndVerifySizedCollectionItemInstruction";
+/* ==================== SEEDS (Browser-kompatibel, kein Buffer) ==================== */
+const te = new TextEncoder();
+const METADATA_SEED = te.encode("metadata");
+const EDITION_SEED  = te.encode("edition");
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
