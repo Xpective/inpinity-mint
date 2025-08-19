@@ -32,7 +32,6 @@ const CFG = {
 };
 
 /* ==================== IMPORTS ==================== */
-// Web3.js + SPL + Metaplex (ohne Umi)
 import {
   Connection, PublicKey, Transaction, SystemProgram,
   Keypair, ComputeBudgetProgram
@@ -49,22 +48,16 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-// Namespace-Import der Token-Metadata-Instruction-Fabrikfunktionen
-// ✅ neu – ganz oben bei den Imports einfügen
-import {
-  createCreateMetadataAccountV3Instruction,
-  createCreateMasterEditionV3Instruction,
-  createSetAndVerifySizedCollectionItemInstruction,
-} import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0";
-/* ==================== SEEDS (Browser-kompatibel, kein Buffer) ==================== */
+// ✅ Einziger Import für Token-Metadata (Namespace)
+import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0";
+
+/* ==================== SEEDS (Browser-sicher) ==================== */
 const te = new TextEncoder();
-const METADATA_SEED = te.encode("metadata");
-const EDITION_SEED  = te.encode("edition");
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
-  const TARGET  = CFG.RPCS[0]; // bevorzugter Worker
+  const TARGET  = CFG.RPCS[0];
   const _fetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     try {
@@ -78,74 +71,28 @@ const EDITION_SEED  = te.encode("edition");
   };
 })();
 
-// Metaplex Token Metadata Program ID (fest)
+/* ==================== PROGRAM IDs ==================== */
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
   "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 );
 
-
-// ✅ Browser-kompatible PDA-Finder:
+/* ==================== PDA HELPERS (nur diese drei!) ==================== */
 function findMetadataPda(mint) {
   return PublicKey.findProgramAddressSync(
-    [
-      te.encode("metadata"),
-      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mint.toBuffer(),
-    ],
+    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 }
-
 function findMasterEditionPda(mint) {
   return PublicKey.findProgramAddressSync(
-    [
-      te.encode("metadata"),
-      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mint.toBuffer(),
-      te.encode("edition"),
-    ],
+    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 }
-
 function findEditionMarkPda(mint, edition) {
   const editionNumber = Math.floor(edition / 248);
   return PublicKey.findProgramAddressSync(
-    [
-      te.encode("metadata"),
-      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mint.toBuffer(),
-      te.encode("edition"),
-      te.encode(String(editionNumber)),
-    ],
-    TOKEN_METADATA_PROGRAM_ID
-  )[0];
-}
-
-// PDA: MasterEdition(mint)
-function findMasterEditionPda(mint) {
-  return PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("metadata"),
-      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mint.toBuffer(),
-      Buffer.from("edition"),
-    ],
-    TOKEN_METADATA_PROGRAM_ID
-  )[0];
-}
-
-// PDA: EditionMark(mint, edition)
-function findEditionMarkPda(mint, edition) {
-  const editionNumber = Math.floor(edition / 248);
-  return PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("metadata"),
-      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mint.toBuffer(),
-      Buffer.from("edition"),
-      Buffer.from(editionNumber.toString()),
-    ],
+    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition"), te.encode(String(editionNumber))],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 }
@@ -181,7 +128,6 @@ const eqPk = (a, b) => {
 /* ==================== STATE ==================== */
 let connection = null;
 let phantom = null;
-let rpcConn = null;
 let originalBtnText = "";
 let claimedSet = new Set();
 let availableIds = [];
@@ -392,8 +338,8 @@ async function doMint() {
   try {
     const btn = $("mintBtn");
     btn.disabled = true;
-    originalBtnText = btn.querySelector(".btn-label").textContent;
-    btn.querySelector(".btn-label").textContent = "Verarbeite...";
+    originalBtnText = btn.querySelector(".btn-label")?.textContent || "";
+    if (btn.querySelector(".btn-label")) btn.querySelector(".btn-label").textContent = "Verarbeite...";
     setSpin(true);
 
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
@@ -421,234 +367,181 @@ async function doMint() {
     const creatorPk = new PublicKey(CFG.CREATOR);
     const isSelf = payer.equals(creatorPk);
 
-    // Get associated token account
     const associatedTokenAccount = await getAssociatedTokenAddress(
-      mint,
-      payer,
-      false,
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
+      mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
     const transaction = new Transaction();
 
-    // Add compute unit instructions
-    transaction.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 })
-    );
-    transaction.add(
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5000 })
-    );
+    // ⚖️ Compute Budget eher moderat
+    transaction.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 }));
+    transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1500 }));
 
-    // Transfer SOL fee if not self
+    // Fee + Donation (falls nicht Creator selbst mintet)
     if (!isSelf) {
-      transaction.add(
-        SystemProgram.transfer({
+      transaction.add(SystemProgram.transfer({
+        fromPubkey: payer,
+        toPubkey: creatorPk,
+        lamports: Math.round(CFG.MINT_FEE_SOL * 1e9)
+      }));
+      if (donationLamports > 0) {
+        transaction.add(SystemProgram.transfer({
           fromPubkey: payer,
           toPubkey: creatorPk,
-          lamports: Math.round(CFG.MINT_FEE_SOL * 1e9)
-        })
-      );
-      
-      if (donationLamports > 0) {
-        transaction.add(
-          SystemProgram.transfer({
-            fromPubkey: payer,
-            toPubkey: creatorPk,
-            lamports: donationLamports
-          })
-        );
+          lamports: donationLamports
+        }));
       }
     }
 
-    // Calculate rent for mint account
+    // Rent für Mint Account
     const lamports = await getMinimumBalanceForRentExemptMint(connection);
     
-    // Create mint account
-    transaction.add(
-      SystemProgram.createAccount({
-        fromPubkey: payer,
-        newAccountPubkey: mint,
-        space: MINT_SIZE,
-        lamports,
-        programId: TOKEN_PROGRAM_ID,
-      })
-    );
+    // Mint Account anlegen + initialisieren
+    transaction.add(SystemProgram.createAccount({
+      fromPubkey: payer,
+      newAccountPubkey: mint,
+      space: MINT_SIZE,
+      lamports,
+      programId: TOKEN_PROGRAM_ID,
+    }));
 
-    // Initialize mint
-    transaction.add(
-      createInitializeMint2Instruction(
-        mint,
-        0, // decimals
-        payer, // mint authority
-        payer // freeze authority
-      )
-    );
+    transaction.add(createInitializeMint2Instruction(
+      mint,
+      0,      // decimals
+      payer,  // mint authority
+      payer   // freeze authority
+    ));
 
-    // Create associated token account
-    transaction.add(
-      createAssociatedTokenAccountInstruction(
-        payer,
-        associatedTokenAccount,
-        payer,
-        mint
-      )
-    );
+    // Associated Token Account für Empfänger
+    transaction.add(createAssociatedTokenAccountInstruction(
+      payer, associatedTokenAccount, payer, mint
+    ));
 
-    // Mint token to account
-    transaction.add(
-      createMintToInstruction(
-        mint,
-        associatedTokenAccount,
-        payer,
-        1 // amount
-      )
-    );
+    // 1 Token minten
+    transaction.add(createMintToInstruction(
+      mint, associatedTokenAccount, payer, 1
+    ));
 
-    // Create metadata
-    // === PDAs berechnen ===
-const metadataPda = findMetadataPda(mint);
-const masterEditionPda = findMasterEditionPda(mint);
+    // === PDAs ===
+    const metadataPda = findMetadataPda(mint);
+    const masterEditionPda = findMasterEditionPda(mint);
 
-// === Create Metadata (V3) ===
-// Fallback: wenn V3 nicht existiert, versuche ohne V3
-const createMetadataIx =
-  (tm.createCreateMetadataAccountV3Instruction
-    ? tm.createCreateMetadataAccountV3Instruction(
-        {
-          metadata: metadataPda,
-          mint,
-          mintAuthority: payer,
-          payer,
-          updateAuthority: payer,
-        },
-        {
-          createMetadataAccountArgsV3: {
-            data: {
-              name: nftName,                 // "Pi Pyramid #<id>"
-              symbol: "InPi",                // <- dein Symbol
-              uri: nftUri,                   // ipfs://…/<id>.json
-              sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-              creators: [
-                { address: creatorPk, verified: payer.equals(creatorPk), share: 100 }
-              ],
-              collection: { key: collectionMint, verified: false },
-              uses: null,
+    // === Create Metadata (V3 bevorzugt, sonst Fallback) ===
+    const createMetadataIx =
+      (tm.createCreateMetadataAccountV3Instruction
+        ? tm.createCreateMetadataAccountV3Instruction(
+            {
+              metadata: metadataPda,
+              mint,
+              mintAuthority: payer,
+              payer,
+              updateAuthority: payer,
             },
-            isMutable: true,
-            collectionDetails: null,
-          },
-        }
-      )
-    : tm.createCreateMetadataAccountInstruction(
-        {
-          metadata: metadataPda,
-          mint,
-          mintAuthority: payer,
-          payer,
-          updateAuthority: payer,
-        },
-        {
-          createMetadataAccountArgs: {
-            data: {
-              name: nftName,
-              symbol: "InPi",
-              uri: nftUri,
-              sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-              creators: [
-                { address: creatorPk, verified: payer.equals(creatorPk), share: 100 }
-              ],
-              collection: { key: collectionMint, verified: false },
-              uses: null,
+            {
+              createMetadataAccountArgsV3: {
+                data: {
+                  name: nftName,
+                  symbol: "InPi",
+                  uri: nftUri,
+                  sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+                  creators: [{ address: creatorPk, verified: payer.equals(creatorPk), share: 100 }],
+                  collection: { key: collectionMint, verified: false },
+                  uses: null
+                },
+                isMutable: true,
+                collectionDetails: null
+              }
+            }
+          )
+        : tm.createCreateMetadataAccountInstruction(
+            {
+              metadata: metadataPda,
+              mint,
+              mintAuthority: payer,
+              payer,
+              updateAuthority: payer,
             },
-            isMutable: true,
-          },
-        }
-      ));
+            {
+              createMetadataAccountArgs: {
+                data: {
+                  name: nftName,
+                  symbol: "InPi",
+                  uri: nftUri,
+                  sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+                  creators: [{ address: creatorPk, verified: payer.equals(creatorPk), share: 100 }],
+                  collection: { key: collectionMint, verified: false },
+                  uses: null
+                },
+                isMutable: true
+              }
+            }
+          ));
+    transaction.add(createMetadataIx);
 
-transaction.add(createMetadataIx);
+    // === Master Edition (V3 bevorzugt, sonst Fallback) ===
+    const createMasterEditionIx =
+      (tm.createCreateMasterEditionV3Instruction
+        ? tm.createCreateMasterEditionV3Instruction(
+            {
+              edition: masterEditionPda,
+              mint,
+              updateAuthority: payer,
+              mintAuthority: payer,
+              payer,
+              metadata: metadataPda,
+            },
+            { createMasterEditionArgs: { maxSupply: 0 } }
+          )
+        : tm.createCreateMasterEditionInstruction(
+            {
+              edition: masterEditionPda,
+              mint,
+              updateAuthority: payer,
+              mintAuthority: payer,
+              payer,
+              metadata: metadataPda,
+            },
+            { createMasterEditionArgs: { maxSupply: 0 } }
+          ));
+    transaction.add(createMasterEditionIx);
 
-// === Create Master Edition (V3) ===
-const createMasterEditionIx =
-  (tm.createCreateMasterEditionV3Instruction
-    ? tm.createCreateMasterEditionV3Instruction(
-        {
-          edition: masterEditionPda,
-          mint,
-          updateAuthority: payer,
-          mintAuthority: payer,
-          payer,
-          metadata: metadataPda,
-        },
-        {
-          createMasterEditionArgs: {
-            maxSupply: 0,
-          },
-        }
-      )
-    : tm.createCreateMasterEditionInstruction(
-        {
-          edition: masterEditionPda,
-          mint,
-          updateAuthority: payer,
-          mintAuthority: payer,
-          payer,
-          metadata: metadataPda,
-        },
-        {
-          createMasterEditionArgs: {
-            maxSupply: 0,
-          },
-        }
-      ));
+    // === Collection verifizieren (nur wenn du Authority bist) ===
+    if (isSelf) {
+      const verifyIx =
+        (tm.createVerifySizedCollectionItemInstruction
+          ? tm.createVerifySizedCollectionItemInstruction({
+              metadata: metadataPda,
+              collectionAuthority: payer,
+              payer,
+              collectionMint,
+              collection: findMetadataPda(collectionMint),
+              collectionMasterEditionAccount: findMasterEditionPda(collectionMint),
+            })
+          : tm.createSetAndVerifySizedCollectionItemInstruction({
+              metadata: metadataPda,
+              collectionAuthority: payer,
+              payer,
+              collectionMint,
+              collection: findMetadataPda(collectionMint),
+              collectionMasterEditionAccount: findMasterEditionPda(collectionMint),
+            }));
+      transaction.add(verifyIx);
+    }
 
-transaction.add(createMasterEditionIx);
-
-// === (Optional) Verify Collection – nur wenn du die Collection-Authority bist ===
-if (isSelf) {
-  // Versuch bevorzugt die „verify sized“ Variante; fallback auf set+verify
-  const verifyIx =
-    (tm.createVerifySizedCollectionItemInstruction
-      ? tm.createVerifySizedCollectionItemInstruction({
-          metadata: metadataPda,
-          collectionAuthority: payer,
-          payer,
-          collectionMint,
-          collection: findMetadataPda(collectionMint),
-          collectionMasterEditionAccount: findMasterEditionPda(collectionMint),
-        })
-      : tm.createSetAndVerifySizedCollectionItemInstruction({
-          metadata: metadataPda,
-          collectionAuthority: payer,
-          payer,
-          collectionMint,
-          collection: findMetadataPda(collectionMint),
-          collectionMasterEditionAccount: findMasterEditionPda(collectionMint),
-        }));
-
-  transaction.add(verifyIx);
-}
-
-    // Get latest blockhash and set fee payer
+    // Blockhash + Fee Payer
     const { blockhash } = await connection.getLatestBlockhash();
     transaction.recentBlockhash = blockhash;
     transaction.feePayer = payer;
 
-    // Sign and send transaction
+    // 🔏 Signaturen (klassische Reihenfolge)
+    transaction.partialSign(mintKeypair);
     setStatus("Bitte im Wallet signieren…", "info");
-    
-    // Sign transaction with wallet
     const signed = await wallet.signTransaction(transaction);
-    
-    // Sign with mint keypair
-    signed.partialSign(mintKeypair);
-    
-    // Send transaction
+
+    // Senden + bestätigen
     const signature = await connection.sendRawTransaction(signed.serialize());
-    
-    // Confirm transaction
-    await connection.confirmTransaction(signature, 'confirmed');
-    
+    await connection.confirmTransaction(signature, "confirmed");
+
     log("sent", { signature });
     const link = `https://solscan.io/tx/${signature}`;
     setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
