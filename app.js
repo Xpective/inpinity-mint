@@ -29,6 +29,13 @@ const CFG = {
     "https://cloudflare-ipfs.com/ipfs",
     "https://ipfs.inpinity.online/ipfs"
   ],
+
+  // 👉 Finalisierung (Metaplex) serverseitig ausführen?
+  FINALIZE: true,
+  FINALIZE_URLS: [
+    "https://api.inpinity.online/finalize",
+    "https://inpinity-rpc-proxy.s-plat.workers.dev/finalize",
+  ],
 };
 
 /* ==================== IMPORTS ==================== */
@@ -48,12 +55,6 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-// ✅ Einziger Import für Token-Metadata (Namespace)
-// Erzwingt stabile named exports aus esm.sh
-import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022";
-/* ==================== SEEDS (Browser-sicher) ==================== */
-const te = new TextEncoder();
-
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
@@ -70,32 +71,6 @@ const te = new TextEncoder();
     return _fetch(input, init);
   };
 })();
-
-/* ==================== PROGRAM IDs ==================== */
-const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
-  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
-);
-
-/* ==================== PDA HELPERS (nur diese drei!) ==================== */
-function findMetadataPda(mint) {
-  return PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    TOKEN_METADATA_PROGRAM_ID
-  )[0];
-}
-function findMasterEditionPda(mint) {
-  return PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
-    TOKEN_METADATA_PROGRAM_ID
-  )[0];
-}
-function findEditionMarkPda(mint, edition) {
-  const editionNumber = Math.floor(edition / 248);
-  return PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition"), te.encode(String(editionNumber))],
-    TOKEN_METADATA_PROGRAM_ID
-  )[0];
-}
 
 /* ==================== HELPERS ==================== */
 const $ = (id) => document.getElementById(id);
@@ -120,10 +95,6 @@ const toHttp = (u) => {
 };
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
-const eqPk = (a, b) => {
-  try { return (typeof a === 'string' ? a : a?.toString?.()) === (typeof b === 'string' ? b : b?.toString?.()); }
-  catch { return false; }
-};
 
 /* ==================== STATE ==================== */
 let connection = null;
@@ -204,7 +175,7 @@ async function updateBalance() {
   if (!phantom?.publicKey) return;
   try {
     const conn = await ensureConnection();
-    const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString()));
+    const lam = await conn.getBalance(phantom.publicKey);
     const sol = lam / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
   } catch (e) {
@@ -333,9 +304,20 @@ function renderPreview(id, meta) {
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
 
-if (typeof tm.createCreateMetadataAccountV3Instruction !== "function" ||
-    typeof tm.createCreateMasterEditionV3Instruction !== "function") {
-  throw new Error("Metaplex V3-Exports fehlen. Import-URL mit ?bundle verwenden oder hart neu laden (Strg/Cmd+Shift+R).");
+/* ==================== FINALIZE (serverseitig) ==================== */
+async function finalizeMintOnWorker(payload) {
+  if (!CFG.FINALIZE) return { ok: true, skipped: true };
+  for (const url of CFG.FINALIZE_URLS) {
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (r.ok) return await r.json().catch(()=>({ ok:true }));
+    } catch {}
+  }
+  throw new Error("Finalize-Endpoint nicht erreichbar");
 }
 
 /* ==================== MINT ==================== */
@@ -378,7 +360,7 @@ async function doMint() {
 
     const transaction = new Transaction();
 
-    // ⚖️ Compute Budget eher moderat
+    // Compute Budget (moderat)
     transaction.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 }));
     transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1500 }));
 
@@ -427,82 +409,12 @@ async function doMint() {
       mint, associatedTokenAccount, payer, 1
     ));
 
-    // === PDAs ===
-// === PDAs ===
-const metadataPda = findMetadataPda(mint);
-const masterEditionPda = findMasterEditionPda(mint);
-
-// === Create Metadata (V3) ===
-const createMetadataIx = tm.createCreateMetadataAccountV3Instruction(
-  {
-    metadata: metadataPda,
-    mint,
-    mintAuthority: payer,
-    payer,
-    updateAuthority: payer,
-  },
-  {
-    createMetadataAccountArgsV3: {
-      data: {
-        name: nftName,
-        symbol: "InPi",
-        uri: nftUri,
-        sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-        creators: [{ address: new PublicKey(CFG.CREATOR), verified: payer.equals(new PublicKey(CFG.CREATOR)), share: 100 }],
-        collection: { key: new PublicKey(CFG.COLLECTION_MINT), verified: false },
-        uses: null
-      },
-      isMutable: true,
-      collectionDetails: null
-    }
-  }
-);
-transaction.add(createMetadataIx);
-
-// === Master Edition (V3) ===
-const createMasterEditionIx = tm.createCreateMasterEditionV3Instruction(
-  {
-    edition: masterEditionPda,
-    mint,
-    updateAuthority: payer,
-    mintAuthority: payer,
-    payer,
-    metadata: metadataPda,
-  },
-  { createMasterEditionArgs: { maxSupply: 0 } }
-);
-transaction.add(createMasterEditionIx);
-
-// === Collection verifizieren (Sized) – wenn du die Authority bist
-if (payer.equals(new PublicKey(CFG.CREATOR))) {
-  const verifyIx = (typeof tm.createVerifySizedCollectionItemInstruction === "function")
-    ? tm.createVerifySizedCollectionItemInstruction({
-        metadata: metadataPda,
-        collectionAuthority: payer,
-        payer,
-        collectionMint: new PublicKey(CFG.COLLECTION_MINT),
-        collection: findMetadataPda(new PublicKey(CFG.COLLECTION_MINT)),
-        collectionMasterEditionAccount: findMasterEditionPda(new PublicKey(CFG.COLLECTION_MINT)),
-      })
-    // Fallback: Set+Verify (selten nötig; nur verwenden, wenn obiger fehlt)
-    : tm.createSetAndVerifySizedCollectionItemInstruction({
-        metadata: metadataPda,
-        collectionAuthority: payer,
-        payer,
-        collectionMint: new PublicKey(CFG.COLLECTION_MINT),
-        collection: findMetadataPda(new PublicKey(CFG.COLLECTION_MINT)),
-        collectionMasterEditionAccount: findMasterEditionPda(new PublicKey(CFG.COLLECTION_MINT)),
-      });
-
-  transaction.add(verifyIx);
-}
-
     // Blockhash + Fee Payer
     const { blockhash } = await connection.getLatestBlockhash();
     transaction.recentBlockhash = blockhash;
     transaction.feePayer = payer;
 
-    // 🔏 Signaturen (klassische Reihenfolge)
+    // Signaturen
     transaction.partialSign(mintKeypair);
     setStatus("Bitte im Wallet signieren…", "info");
     const signed = await wallet.signTransaction(transaction);
@@ -511,9 +423,26 @@ if (payer.equals(new PublicKey(CFG.CREATOR))) {
     const signature = await connection.sendRawTransaction(signed.serialize());
     await connection.confirmTransaction(signature, "confirmed");
 
-    log("sent", { signature });
+    log("sent", { signature, mint: mint.toBase58(), ata: associatedTokenAccount.toBase58() });
     const link = `https://solscan.io/tx/${signature}`;
-    setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
+    setStatus(`✅ Mint (SPL) erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
+
+    // ➜ Serverseitige Finalisierung (Metaplex)
+    try {
+      const fin = await finalizeMintOnWorker({
+        mint: mint.toBase58(),
+        index: id,
+        uri: nftUri,
+        name: nftName,
+        symbol: "InPi",
+        royaltyBps: CFG.ROYALTY_BPS,
+        collectionMint: collectionMint.toBase58(),
+        payer: payer.toBase58(),
+      });
+      log("Finalize", fin || { ok:true });
+    } catch (e) {
+      log("Finalize fehlgeschlagen (server). Du kannst es später erneut versuchen.", String(e?.message||e));
+    }
 
     await markClaimed(id);
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
