@@ -61,31 +61,64 @@ import {
 
 /* ==================== Metaplex TM Loader (robust) ==================== */
 let tm = null;
+/* ==================== Metaplex TM Loader (sehr robust) ==================== */
+let tm = null;
 async function loadTokenMetadata() {
   if (tm) return tm;
+
+  // 1) Kandidaten: mehrere CDNs und optional lokales File
   const candidates = [
+    // CDN-Varianten (ESM, gebundelt)
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
-    "https://cdn.skypack.dev/@metaplex-foundation/mpl-token-metadata@3.4.0?min"
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
+    "https://cdn.skypack.dev/@metaplex-foundation/mpl-token-metadata@3.4.0?min",
+
+    // 2) Eigener Proxy (falls du ihn einrichtest; siehe Option C unten)
+    // "https://api.inpinity.online/vendor/mpl-token-metadata-3.4.0.mjs",
+
+    // 3) Lokale Vendor-Datei (Option B – garantiert stabil):
+    // SAME-ORIGIN -> kein CORS/CSP-Ärger mehr
+    `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs`
   ];
+
+  // 2) Vorab: simple Reachability-Checks, damit wir saubere Fehler zeigen
+  async function ping(url) {
+    try {
+      const r = await fetch(url, { method: "HEAD", cache: "no-store", mode: "cors" });
+      return r.ok;
+    } catch { return false; }
+  }
+
   let lastErr = null;
   for (const url of candidates) {
     try {
+      // Reachability-Check (skippe offensichtliche Totalausfälle)
+      const ok = url.startsWith(location.origin) ? true : await ping(url);
+      if (!ok) { lastErr = new Error(`HEAD failed for ${url}`); continue; }
+
+      // Dinamisch importieren
       const mod = await import(/* @vite-ignore */ url);
       const m = mod?.default ?? mod;
-      if (
-        typeof m.createCreateMetadataAccountV3Instruction === "function" &&
-        typeof m.createCreateMasterEditionV3Instruction === "function"
-      ) {
+
+      if (typeof m.createCreateMetadataAccountV3Instruction === "function" &&
+          typeof m.createCreateMasterEditionV3Instruction === "function") {
         tm = m;
         console.log("[TM] loaded:", url);
         return tm;
       }
-      lastErr = new Error(`Loaded but exports missing from ${url}`);
-    } catch (e) { lastErr = e; }
+      lastErr = new Error(`Loaded ${url} but V3 exports missing`);
+    } catch (e) {
+      lastErr = e;
+      console.warn("[TM] import failed:", url, e);
+    }
   }
-  console.error(lastErr);
-  throw new Error("Metaplex Token Metadata konnte nicht geladen werden. Harter Reload (Cmd/Ctrl+Shift+R)?");
+
+  console.error("[TM] all imports failed. Last error:", lastErr);
+  throw new Error(
+    "Metaplex Token Metadata konnte nicht geladen werden. " +
+    "Nutze Option B (lokale Vendor-Datei) oder aktiviere Option C (Proxy)."
+  );
 }
 
 /* ==================== SEEDS / PROGRAM IDs ==================== */
