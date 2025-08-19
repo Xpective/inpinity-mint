@@ -1,13 +1,13 @@
 :root{
-  --bg:#0b0b10;           /* fast schwarz */
-  --panel:#121225;        /* tiefes violett-schwarz */
-  --card:#14142b;         /* dunkle Card */
+  --bg:#0b0b10;
+  --panel:#121225;
+  --card:#14142b;
   --line:#252545;
-  --text:#e8e8ff;         /* leicht bläulich */
+  --text:#e8e8ff;
   --muted:#9aa0b3;
 
-  --brand:#26e7ff;        /* CYAN */
-  --brand-2:#a461ff;      /* LILA */
+  --brand:#26e7ff;
+  --brand-2:#a461ff;
   --brand-contrast:#0b0b10;
 
   --ok:#28f09e;
@@ -55,6 +55,9 @@ body{
   grid-template-columns: 420px 1fr;
 }
 @media (max-width:1000px){ .grid{ grid-template-columns: 1fr; } }
+
+/* Flexible row used in forms */
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 
 /* Cards */
 .card{
@@ -133,9 +136,11 @@ body{
 
 .uri-line{margin-top:8px}
 .meta-box{margin-top:10px}
-.kv{display:grid;grid-template-columns:130px 1fr;gap:8px;margin:0}
-.kv dt{font-weight:600}
-.kv dd{margin:0}
+
+/* <dl> aus renderPreview() schön darstellen */
+.meta-box dl{display:grid;grid-template-columns:130px 1fr;gap:8px;margin:0}
+.meta-box dt{font-weight:600}
+.meta-box dd{margin:0}
 
 .info{margin-top:18px}
 .info-grid{display:grid;gap:16px;grid-template-columns:repeat(3,1fr)}
