@@ -63,18 +63,32 @@ let tm = null;
 async function loadTokenMetadata() {
   if (tm?.createCreateMetadataAccountV3Instruction) return tm;
 
+  // per <script> vorab geladen?
   if (window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
     tm = window.mplTokenMetadata;
-    console.log("[TM] using preloaded UMD");
+    console.log("[TM] UMD preloaded");
     return tm;
   }
 
-  const esmCandidates = [
-    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
-    `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs?nocache=${Date.now()}`,
-  ];
+  // Fallback: lade von deiner Origin
+  const url = "https://api.inpinity.online/vendor/mpl-token-metadata-umd.js?v=3.4.0";
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = url;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("UMD load failed"));
+    document.head.appendChild(s);
+  });
+
+  const m = window.mplTokenMetadata;
+  if (!m?.createCreateMetadataAccountV3Instruction || !m?.createCreateMasterEditionV3Instruction) {
+    throw new Error("UMD loaded but expected exports missing");
+  }
+  tm = m;
+  console.log("[TM] UMD loaded from", url);
+  return tm;
+}
   async function ping(url){
     try{ const r=await fetch(url,{method:"HEAD",cache:"no-store",mode:"cors"}); return r.ok; }
     catch{ return false; }
