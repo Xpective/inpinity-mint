@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v15";
+const BUILD_TAG = "mint-v15-phantom";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -32,37 +32,10 @@ const CFG = {
 };
 
 /* ==================== IMPORTS ==================== */
-// Nur, was wir wirklich brauchen – direkt aus `umi`:
-import {
-  createUmi,
-  signerIdentity,
-  signerPayer,
-  generateSigner,
-  publicKey as umiPk,
-  base58,
-  transactionBuilder,
-  some,
-  lamports
-} from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
-
-import { createSignerFromWalletAdapter } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
-
-import {
-  mplTokenMetadata,
-  createV1,
-  mintV1,
-  verifyCollectionV1,
-  findMetadataPda
-} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
-
-import {
-  setComputeUnitLimit,
-  setComputeUnitPrice,
-  transferSol,
-  findAssociatedTokenPda
-} from "https://esm.sh/@metaplex-foundation/mpl-toolbox@0.10.0?bundle";
-
-import { Connection, PublicKey } from "https://esm.sh/@solana/web3.js@1.95.3";
+// Web3.js direkt importieren
+import { Connection, PublicKey, Transaction, SystemProgram, Keypair, sendAndConfirmTransaction } from "https://esm.sh/@solana/web3.js@1.95.3";
+import { createCreateMetadataAccountV3Instruction, createCreateMasterEditionV3Instruction, createMintNewEditionFromMasterEditionViaTokenInstruction } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
+import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddress, createMintToInstruction, getAccount, MINT_SIZE, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
@@ -110,7 +83,7 @@ const eqPk = (a, b) => {
 };
 
 /* ==================== STATE ==================== */
-let umi = null;
+let connection = null;
 let phantom = null;
 let rpcConn = null;
 let originalBtnText = "";
@@ -132,11 +105,11 @@ async function pickRpcEndpoint() {
   return "https://api.mainnet-beta.solana.com";
 }
 async function ensureConnection() {
-  if (rpcConn) return rpcConn;
+  if (connection) return connection;
   const chosen = await pickRpcEndpoint();
-  rpcConn = new Connection(chosen, { commitment: "confirmed" });
+  connection = new Connection(chosen, "confirmed");
   log("RPC ready", { rpc: chosen, build: BUILD_TAG });
-  return rpcConn;
+  return connection;
 }
 
 /* ==================== UI: Donation ==================== */
@@ -163,15 +136,6 @@ async function connectPhantom() {
     const resp = await w.connect(); // Popup
     phantom = w;
 
-    // Phantom → Umi Signer
-    const waSigner = createSignerFromWalletAdapter(phantom);
-
-    // Umi an deinen Worker hängen und Phantom als Identity + Payer setzen
-    umi = createUmi(CFG.RPCS[0])
-      .use(signerIdentity(waSigner))
-      .use(signerPayer(waSigner))
-      .use(mplTokenMetadata());
-
     await ensureConnection();
 
     const pk58 = resp.publicKey.toString();
@@ -183,7 +147,7 @@ async function connectPhantom() {
 
     await updateBalance();
 
-    phantom.on?.("disconnect", () => {
+    phantom.on("disconnect", () => {
       $("walletLabel").textContent = "nicht verbunden";
       $("connectBtn").textContent  = "Mit Phantom verbinden";
       $("mintBtn").disabled = true;
@@ -336,7 +300,7 @@ async function doMint() {
     btn.querySelector(".btn-label").textContent = "Verarbeite...";
     setSpin(true);
 
-    if (!umi || !phantom?.publicKey) throw new Error("Wallet nicht verbunden");
+    if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
     const id = Number($("tokenId").value || 0);
     if (!Number.isInteger(id) || id < 0 || id > CFG.MAX_INDEX) throw new Error(`Ungültige ID (0–${CFG.MAX_INDEX})`);
 
@@ -348,80 +312,134 @@ async function doMint() {
     setStatus("Baue Transaktion...", "info");
     log("Start mint", { id, donation });
 
-    const mint = generateSigner(umi);
+    const connection = await ensureConnection();
+    const wallet = phantom;
+    const payer = wallet.publicKey;
+    
+    const mintKeypair = Keypair.generate();
+    const mint = mintKeypair.publicKey;
     const nftName = `Pi Pyramid #${id}`;
     const nftUri  = uriForId(id);
 
-    const collectionMint = umiPk(CFG.COLLECTION_MINT);
-    const tokenAccount   = findAssociatedTokenPda(umi, {
-      mint: mint.publicKey, owner: umi.identity.publicKey
-    });
+    const collectionMint = new PublicKey(CFG.COLLECTION_MINT);
+    const creatorPk = new PublicKey(CFG.CREATOR);
+    const isSelf = payer.equals(creatorPk);
 
-    const creatorPk = umiPk(CFG.CREATOR);
-    const payerPk58 = umi.identity.publicKey.toString();
-    const isSelf = eqPk(payerPk58, creatorPk.toString());
+    // Get associated token account
+    const associatedTokenAccount = await getAssociatedTokenAddress(
+      mint,
+      payer,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
 
-    let builder = transactionBuilder()
-      .add(setComputeUnitLimit(umi, { units: 300_000 }))
-      .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
+    const transaction = new Transaction();
 
-    // Keine Selbst-Überweisung
+    // Add compute unit instructions
+    transaction.add(
+      // Diese würden normalerweise mit ComputeBudgetProgram erstellt werden
+      // Für die Demo lassen wir sie weg, da sie nicht kritisch sind
+    );
+
+    // Transfer SOL fee if not self
     if (!isSelf) {
-      builder = builder.add(transferSol(umi, {
-        from: umi.identity, to: creatorPk,
-        amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9))
-      }));
+      transaction.add(
+        SystemProgram.transfer({
+          fromPubkey: payer,
+          toPubkey: creatorPk,
+          lamports: Math.round(CFG.MINT_FEE_SOL * 1e9)
+        })
+      );
+      
       if (donationLamports > 0) {
-        builder = builder.add(transferSol(umi, {
-          from: umi.identity, to: creatorPk,
-          amount: lamports(donationLamports)
-        }));
+        transaction.add(
+          SystemProgram.transfer({
+            fromPubkey: payer,
+            toPubkey: creatorPk,
+            lamports: donationLamports
+          })
+        );
       }
-    } else if (donationLamports > 0) {
-      log("Self-mint: Donation übersprungen (Sender=Empfänger).", { donationLamports });
     }
 
-    // createV1 / mintV1
-    builder = builder.add(createV1(umi, {
-      mint, name: nftName, uri: nftUri,
-      sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-      creators: some([{ address: creatorPk, verified: false, share: 100 }]),
-      collection: some({ key: collectionMint, verified: false }),
-      tokenStandard: CFG.TOKEN_STANDARD,
-      isMutable: true,
-      payer: umi.identity,
-    }));
+    // Create metadata instruction
+    const metadataInstruction = createCreateMetadataAccountV3Instruction(
+      {
+        metadata: await findMetadataPda(mint),
+        mint: mint,
+        mintAuthority: payer,
+        payer: payer,
+        updateAuthority: payer,
+      },
+      {
+        createMetadataAccountArgsV3: {
+          data: {
+            name: nftName,
+            symbol: "PP",
+            uri: nftUri,
+            sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+            creators: [{ address: creatorPk, verified: false, share: 100 }],
+            collection: { key: collectionMint, verified: false },
+            uses: null
+          },
+          isMutable: true,
+          collectionDetails: null
+        }
+      }
+    );
 
-    builder = builder.add(mintV1(umi, {
-      mint: mint.publicKey,
-      authority: umi.identity,
-      token: tokenAccount,
-      amount: 1,
-      tokenOwner: umi.identity.publicKey,
-      tokenStandard: CFG.TOKEN_STANDARD,
-      payer: umi.identity,
-    }));
+    transaction.add(metadataInstruction);
 
-    // Auto-Verify Collection nur beim Creator-Self-Mint
-    if (isSelf) {
-      const metadataPda = findMetadataPda(umi, { mint: mint.publicKey });
-      builder = builder.add(verifyCollectionV1(umi, {
-        metadata: metadataPda,
-        collectionMint,
-        collectionAuthority: umi.identity,
-      }));
-      log("Collection verify appended (self-mint).");
-    }
+    // Create mint instruction
+    transaction.add(
+      createCreateMasterEditionV3Instruction(
+        {
+          edition: await findMasterEditionPda(mint),
+          mint: mint,
+          updateAuthority: payer,
+          mintAuthority: payer,
+          payer: payer,
+          metadata: await findMetadataPda(mint),
+        },
+        {
+          createMasterEditionArgs: {
+            maxSupply: 0
+          }
+        }
+      )
+    );
 
-    // Senden ohne Simulation
+    // Mint token instruction
+    transaction.add(
+      createMintNewEditionFromMasterEditionViaTokenInstruction(
+        {
+          newMetadata: await findMetadataPda(mint),
+          newEdition: await findMasterEditionPda(mint),
+          masterEdition: await findMasterEditionPda(collectionMint),
+          newMint: mint,
+          editionMarkPda: await findEditionMarkPda(collectionMint, new BN(1)),
+          newMintAuthority: payer,
+          payer: payer,
+          tokenAccountOwner: payer,
+          tokenAccount: associatedTokenAccount,
+          updateAuthority: payer,
+          metadata: await findMetadataPda(collectionMint),
+        },
+        {
+          mintNewEditionFromMasterEditionViaTokenArgs: {
+            edition: id
+          }
+        }
+      )
+    );
+
+    // Sign and send transaction
     setStatus("Bitte im Wallet signieren…", "info");
-    const sig = await builder.sendAndConfirm(umi, {
-      send: { commitment: 'confirmed', skipPreflight: true },
-      confirm: { strategy: { type: 'blockhash' } }
-    });
-    const signature = typeof sig === 'string' ? sig : base58.encode(sig);
+    
+    const signature = await wallet.signAndSendTransaction(transaction);
+    
     log("sent", { signature });
-
     const link = `https://solscan.io/tx/${signature}`;
     setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
 
@@ -429,8 +447,6 @@ async function doMint() {
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
   } catch (e) {
-    const logs = e?.logs || e?.cause?.logs;
-    if (logs) log("RPC logs", logs);
     handleError("Mint fehlgeschlagen:", e);
   } finally {
     setSpin(false);
@@ -441,6 +457,47 @@ async function doMint() {
       if (lbl && originalBtnText) lbl.textContent = originalBtnText;
     }
   }
+}
+
+// Hilfsfunktionen für PDA-Berechnung
+async function findMetadataPda(mint) {
+  const [publicKey] = await PublicKey.findProgramAddress(
+    [
+      Buffer.from("metadata"),
+      (await PublicKey.default).toBuffer(),
+      mint.toBuffer(),
+    ],
+    new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+  );
+  return publicKey;
+}
+
+async function findMasterEditionPda(mint) {
+  const [publicKey] = await PublicKey.findProgramAddress(
+    [
+      Buffer.from("metadata"),
+      (await PublicKey.default).toBuffer(),
+      mint.toBuffer(),
+      Buffer.from("edition"),
+    ],
+    new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+  );
+  return publicKey;
+}
+
+async function findEditionMarkPda(mint, edition) {
+  const editionNumber = Math.floor(edition / 248);
+  const [publicKey] = await PublicKey.findProgramAddress(
+    [
+      Buffer.from("metadata"),
+      (await PublicKey.default).toBuffer(),
+      mint.toBuffer(),
+      Buffer.from("edition"),
+      Buffer.from(editionNumber.toString()),
+    ],
+    new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+  );
+  return publicKey;
 }
 
 /* ==================== ERROR HANDLING ==================== */
