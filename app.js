@@ -32,17 +32,36 @@ const CFG = {
 };
 
 /* ==================== IMPORTS ==================== */
+// Nur, was wir wirklich brauchen – direkt aus `umi`:
 import {
-  generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports
+  createUmi,
+  signerIdentity,
+  signerPayer,
+  generateSigner,
+  publicKey as umiPk,
+  base58,
+  transactionBuilder,
+  some,
+  lamports
 } from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
-import { createUmi as createUmiDefaults, signerPayer, signerIdentity } from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
+
 import { createSignerFromWalletAdapter } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
+
 import {
-  mplTokenMetadata, createV1, mintV1, verifyCollectionV1, findMetadataPda
+  mplTokenMetadata,
+  createV1,
+  mintV1,
+  verifyCollectionV1,
+  findMetadataPda
 } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
+
 import {
-  setComputeUnitLimit, setComputeUnitPrice, transferSol, findAssociatedTokenPda
+  setComputeUnitLimit,
+  setComputeUnitPrice,
+  transferSol,
+  findAssociatedTokenPda
 } from "https://esm.sh/@metaplex-foundation/mpl-toolbox@0.10.0?bundle";
+
 import { Connection, PublicKey } from "https://esm.sh/@solana/web3.js@1.95.3";
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
@@ -144,9 +163,11 @@ async function connectPhantom() {
     const resp = await w.connect(); // Popup
     phantom = w;
 
-    // Phantom als Identity **und** Payer
+    // Phantom → Umi Signer
     const waSigner = createSignerFromWalletAdapter(phantom);
-    umi = createUmiDefaults(CFG.RPCS[0])
+
+    // Umi an deinen Worker hängen und Phantom als Identity + Payer setzen
+    umi = createUmi(CFG.RPCS[0])
       .use(signerIdentity(waSigner))
       .use(signerPayer(waSigner))
       .use(mplTokenMetadata());
@@ -196,7 +217,6 @@ async function fetchClaims() {
       if (!j) continue;
       if (Array.isArray(j)) return j;
       if (Array.isArray(j.claimed)) return j.claimed;
-      if (Array.isArray(j.claimed?.claimed)) return j.claimed.claimed; // defensive
     } catch {}
   }
   return [];
@@ -345,7 +365,7 @@ async function doMint() {
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
-    // Keine Selbst-Überweisung (Self-mint)
+    // Keine Selbst-Überweisung
     if (!isSelf) {
       builder = builder.add(transferSol(umi, {
         from: umi.identity, to: creatorPk,
@@ -361,7 +381,7 @@ async function doMint() {
       log("Self-mint: Donation übersprungen (Sender=Empfänger).", { donationLamports });
     }
 
-    // createV1 / mintV1 mit payer = Phantom
+    // createV1 / mintV1
     builder = builder.add(createV1(umi, {
       mint, name: nftName, uri: nftUri,
       sellerFeeBasisPoints: CFG.ROYALTY_BPS,
@@ -393,7 +413,7 @@ async function doMint() {
       log("Collection verify appended (self-mint).");
     }
 
-    // Senden ohne Simulation/Preflight (um den Readonly-Balance-Fehler zu umgehen)
+    // Senden ohne Simulation
     setStatus("Bitte im Wallet signieren…", "info");
     const sig = await builder.sendAndConfirm(umi, {
       send: { commitment: 'confirmed', skipPreflight: true },
