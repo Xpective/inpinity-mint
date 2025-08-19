@@ -1,11 +1,5 @@
-let tm = null;
-if (window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
-  tm = window.mplTokenMetadata;               // UMD sofort benutzen
-}
-// ... dein loadTokenMetadata() behältst du als Fallback (lädt ESM → UMD)
-
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v16-phantom";
+const BUILD_TAG = "mint-v17-phantom";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -36,33 +30,50 @@ const CFG = {
   ],
 };
 
+/* ==================== (A) EVM SHIM (sicher) ==================== */
+(function evmNoopShim(){
+  try {
+    const w = window;
+    if (!w.ethereum) w.ethereum = {};
+    if (typeof w.ethereum.setExternalProvider !== "function") {
+      w.ethereum.setExternalProvider = function(){ /* no-op */ };
+    }
+  } catch {}
+})();
 
+/* ==================== IMPORTS (ESM, Browser) ==================== */
+import {
+  Connection, PublicKey, Transaction, SystemProgram,
+  Keypair, ComputeBudgetProgram
+} from "https://esm.sh/@solana/web3.js@1.95.3";
 
-/* ==================== IMPORTS (Solana) ==================== */
-// web3.js hängt global an window.solanaWeb3
-const { Connection, PublicKey, Transaction, SystemProgram } = window.solanaWeb3;
+import {
+  getMinimumBalanceForRentExemptMint,
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  createInitializeMint2Instruction,
+  createMintToInstruction,
+} from "https://esm.sh/@solana/spl-token@0.4.9";
 
-// mpl-token-metadata hängt global an window.mplTokenMetadata
-const tm = window.mplTokenMetadata;
-
-/* ==================== Metaplex TM Loader (robust: ESM → UMD) ==================== */
+/* ==================== Metaplex TM Loader (ESM → UMD Fallback) ==================== */
 let tm = null;
 async function loadTokenMetadata() {
-  if (tm) return tm;
+  if (tm?.createCreateMetadataAccountV3Instruction) return tm;
 
-  // Falls UMD per <script> schon da ist → direkt nutzen
+  // Wenn via <script> UMD schon vorhanden wäre:
   if (window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
     tm = window.mplTokenMetadata;
-    console.log("[TM] UMD preloaded via <script>");
+    console.log("[TM] using preloaded UMD");
     return tm;
   }
 
-  // 1) ESM (gebundelt) – ohne externe Abhängigkeiten
   const esmCandidates = [
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
-    // Lokale Vendor-Datei (wenn vorhanden)
     `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs?nocache=${Date.now()}`,
   ];
 
@@ -75,7 +86,7 @@ async function loadTokenMetadata() {
 
   let lastErr = null;
 
-  // --- ESM versuchen ---
+  // 1) Versuche ESM
   for (const url of esmCandidates) {
     try {
       const ok = url.startsWith(location.origin) ? true : await ping(url);
@@ -95,7 +106,7 @@ async function loadTokenMetadata() {
     }
   }
 
-  // --- UMD Fallback (setzt window.mplTokenMetadata) ---
+  // 2) Fallback UMD
   const umdCandidates = [
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
@@ -104,16 +115,14 @@ async function loadTokenMetadata() {
     try {
       await new Promise((resolve, reject) => {
         const s = document.createElement("script");
-        s.src = url;
-        s.async = true;
+        s.src = url; s.async = true;
         s.onload = resolve;
         s.onerror = () => reject(new Error("UMD load failed"));
         document.head.appendChild(s);
       });
       const m = window.mplTokenMetadata;
-      if (m &&
-          typeof m.createCreateMetadataAccountV3Instruction === "function" &&
-          typeof m.createCreateMasterEditionV3Instruction === "function") {
+      if (m?.createCreateMetadataAccountV3Instruction &&
+          m?.createCreateMasterEditionV3Instruction) {
         tm = m;
         console.log("[TM] UMD loaded:", url);
         return tm;
@@ -126,10 +135,7 @@ async function loadTokenMetadata() {
   }
 
   console.error("[TM] all imports failed. Last error:", lastErr);
-  throw new Error(
-    "Metaplex Token Metadata konnte nicht geladen werden. " +
-    "Lade die UMD-Variante oder lege eine lokale Vendor-Datei ab."
-  );
+  throw new Error("Metaplex Token Metadata konnte nicht geladen werden. (UMD/ESM)");
 }
 
 /* ==================== SEEDS / PROGRAM IDs ==================== */
@@ -188,7 +194,6 @@ const toHttp = (u) => {
   return u;
 };
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
-const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
 
 /* ==================== STATE ==================== */
 let connection = null;
@@ -239,7 +244,6 @@ async function connectPhantom() {
   try {
     const w = window.solana;
     if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
-
     const resp = await w.connect(); // Popup
     phantom = w;
 
@@ -462,14 +466,14 @@ async function setSmartPriority(tx, conn) {
   }
 }
 
-/* ==================== Sign & Send mit Retry ==================== */
+/* ==================== Sign & Send (mit Retry) ==================== */
 async function signSendWithRetry(conn, tx, wallet, extraSigner) {
   if (extraSigner) tx.partialSign(extraSigner);
   for (let attempt=0; attempt<3; attempt++) {
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
-    const signed = await wallet.signTransaction(tx);
+    const signed = await wallet.signTransaction(tx);   // <- HIER kommt das Phantom-Popup
 
     const sim = await conn.simulateTransaction(signed, { sigVerify:false, commitment:"processed" });
     if (sim?.value?.logs) log("simulate logs", sim.value.logs);
@@ -520,7 +524,7 @@ async function doMint() {
     setStatus("Baue Transaktion...", "info");
     log("Start mint", { id, donation });
 
-    const connection = await ensureConnection();
+    const conn = await ensureConnection();
     const wallet = phantom;
     const payer = wallet.publicKey;
 
@@ -534,63 +538,51 @@ async function doMint() {
     const isSelf = payer.equals(creatorPk);
 
     // Soft-Check Collection
-    await softAssertCollection(connection, collectionMint);
+    await softAssertCollection(conn, collectionMint);
 
-    const transaction = new Transaction();
+    const tx = new Transaction();
 
-    // Compute Budget
-    await setSmartPriority(transaction, connection);
+    // Priority
+    await setSmartPriority(tx, conn);
 
     // Creator-Fee + optionale Spende
     const feeLamports = isSelf ? 0 : Math.round(CFG.MINT_FEE_SOL * 1e9);
     if (feeLamports > 0) {
-      transaction.add(SystemProgram.transfer({
-        fromPubkey: payer, toPubkey: creatorPk, lamports: feeLamports
-      }));
+      tx.add(SystemProgram.transfer({ fromPubkey: payer, toPubkey: creatorPk, lamports: feeLamports }));
     }
     if (donationLamports >= 1_000) {
-      transaction.add(SystemProgram.transfer({
-        fromPubkey: payer, toPubkey: creatorPk, lamports: donationLamports
-      }));
+      tx.add(SystemProgram.transfer({ fromPubkey: payer, toPubkey: creatorPk, lamports: donationLamports }));
     }
 
     // Rent für Mint Account
-    const rentLamports = await getMinimumBalanceForRentExemptMint(connection);
+    const rentLamports = await getMinimumBalanceForRentExemptMint(conn);
 
     // Mint Account anlegen + initialisieren (Decimals=0)
-    transaction.add(SystemProgram.createAccount({
+    tx.add(SystemProgram.createAccount({
       fromPubkey: payer,
       newAccountPubkey: mint,
       space: MINT_SIZE,
       lamports: rentLamports,
       programId: TOKEN_PROGRAM_ID,
     }));
-    transaction.add(createInitializeMint2Instruction(
-      mint, 0, payer, payer
-    ));
+    tx.add(createInitializeMint2Instruction(mint, 0, payer, payer));
 
     // ATA berechnen & (falls nötig) anlegen
-    const associatedTokenAccount = await getAssociatedTokenAddress(
-      mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-    const ataInfo = await connection.getAccountInfo(associatedTokenAccount);
+    const ata = await getAssociatedTokenAddress(mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    const ataInfo = await conn.getAccountInfo(ata);
     if (!ataInfo) {
-      transaction.add(createAssociatedTokenAccountInstruction(
-        payer, associatedTokenAccount, payer, mint
-      ));
+      tx.add(createAssociatedTokenAccountInstruction(payer, ata, payer, mint));
     }
 
     // 1 Token minten (v1-NFT)
-    transaction.add(createMintToInstruction(
-      mint, associatedTokenAccount, payer, 1
-    ));
+    tx.add(createMintToInstruction(mint, ata, payer, 1));
 
     // === PDAs ===
     const metadataPda = findMetadataPda(mint);
     const masterEditionPda = findMasterEditionPda(mint);
 
     // === Metadata V3 ===
-    transaction.add(
+    tx.add(
       TM.createCreateMetadataAccountV3Instruction(
         {
           metadata: metadataPda,
@@ -618,11 +610,11 @@ async function doMint() {
     );
 
     // === Master Edition V3 (1/1) ===
-    transaction.add(
+    tx.add(
       TM.createCreateMasterEditionV3Instruction(
         {
           edition: masterEditionPda,
-        mint,
+          mint,
           updateAuthority: payer,
           mintAuthority: payer,
           payer,
@@ -632,50 +624,48 @@ async function doMint() {
       )
     );
 
-    // === Collection verify – sized ODER non-sized
+    // === Collection verify – SIZED oder LEGACY (v1)
     if (isSelf) {
       const collMdPda = findMetadataPda(collectionMint);
       const collEdPda = findMasterEditionPda(collectionMint);
 
-      const hasSizedVerify = typeof tm.createVerifySizedCollectionItemInstruction === "function";
-      const hasSetAndSized  = typeof tm.createSetAndVerifySizedCollectionItemInstruction === "function";
-      const hasLegacyVerify = typeof tm.createVerifyCollectionInstruction === "function";
-      const hasLegacySet    = typeof tm.createSetAndVerifyCollectionInstruction === "function";
+      const hasSizedVerify = typeof TM.createVerifySizedCollectionItemInstruction === "function";
+      const hasSetAndSized  = typeof TM.createSetAndVerifySizedCollectionItemInstruction === "function";
+      const hasLegacyVerify = typeof TM.createVerifyCollectionInstruction === "function";
+      const hasLegacySet    = typeof TM.createSetAndVerifyCollectionInstruction === "function";
 
       if (hasSizedVerify || hasSetAndSized) {
-        const sizedIx = (hasSizedVerify
-          ? tm.createVerifySizedCollectionItemInstruction
-          : tm.createSetAndVerifySizedCollectionItemInstruction);
-        transaction.add(
-          sizedIx({
-            metadata: metadataPda,
-            collectionAuthority: payer,
-            payer,
-            collectionMint,
-            collection: collMdPda,
-            collectionMasterEditionAccount: collEdPda,
-          })
-        );
+        // SIZED Collections (benötigen MasterEdition der Collection)
+        const sizedIx = hasSizedVerify
+          ? TM.createVerifySizedCollectionItemInstruction
+          : TM.createSetAndVerifySizedCollectionItemInstruction;
+        tx.add(sizedIx({
+          metadata: metadataPda,
+          collectionAuthority: payer,
+          payer,
+          collectionMint,
+          collection: collMdPda,
+          collectionMasterEditionAccount: collEdPda,
+        }));
       } else if (hasLegacyVerify || hasLegacySet) {
-        const legacyIx = (hasLegacyVerify
-          ? tm.createVerifyCollectionInstruction
-          : tm.createSetAndVerifyCollectionInstruction);
-        transaction.add(
-          legacyIx({
-            metadata: metadataPda,
-            collectionAuthority: payer,
-            payer,
-            collectionMint,
-            collection: collMdPda,
-          })
-        );
+        // NON-SIZED / v1 Collections (ohne MasterEdition-Account in der Ix)
+        const legacyIx = hasLegacyVerify
+          ? TM.createVerifyCollectionInstruction
+          : TM.createSetAndVerifyCollectionInstruction;
+        tx.add(legacyIx({
+          metadata: metadataPda,
+          collectionAuthority: payer,
+          payer,
+          collectionMint,
+          collection: collMdPda,
+        }));
       } else {
         console.warn("[TM] Keine passende Verify-Instruction im Modul gefunden.");
       }
     }
 
     setStatus("Bitte im Wallet signieren…", "info");
-    const signature = await signSendWithRetry(connection, transaction, wallet, mintKeypair);
+    const signature = await signSendWithRetry(conn, tx, wallet, mintKeypair);
 
     log("sent", { signature });
     const link = `https://solscan.io/tx/${signature}`;
@@ -715,7 +705,7 @@ function userFriendly(msg){
   if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
   if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
   if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
-  if (/Metaplex Token Metadata konnte nicht geladen/i.test(msg)) return "TM-Library nicht geladen. Hard-Reload (Cmd/Ctrl+Shift+R) oder lokale Vendor-Datei nutzen.";
+  if (/Metaplex Token Metadata konnte nicht geladen/i.test(msg)) return "TM-Library nicht geladen (ESM/UMD). Hard-Reload (Cmd/Ctrl+Shift+R).";
   return msg;
 }
 function handleError(context, e) {
@@ -776,7 +766,6 @@ function wireUI() {
   applyDonationSelection();
   updateEstimatedCost();
 
-  // In-App Browser Warnung
   try {
     const ua = navigator.userAgent || "";
     const bad = /Instagram|FBAN|FBAV|Line\/|TikTok/i.test(ua);
