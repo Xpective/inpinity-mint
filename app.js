@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v15";
+const BUILD_TAG = "mint-v15-phantom";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -11,15 +11,21 @@ const CFG = {
     "https://api.inpinity.online/claims",
     "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
   ],
+
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   MINT_FEE_SOL: 0.02,
-  COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
+
+  // ↙️ Falls deine echte Collection (laut deinen Metadaten) 6xvwKX… ist, hier einsetzen
+  COLLECTION_MINT: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
+
   ROYALTY_BPS: 700,
-  TOKEN_STANDARD: 4,
+  TOKEN_STANDARD: 4, // bleibt ungenutzt in der reinen web3-Variante, schadet nicht
   MAX_INDEX: 9999,
+
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
+
   GATEWAYS: [
     "https://ipfs.io/ipfs",
     "https://cloudflare-ipfs.com/ipfs",
@@ -27,17 +33,29 @@ const CFG = {
   ],
 };
 
-/* ==================== IMPORTS ==================== */
+/* ==================== IMPORTS (nur web3.js + spl-token + metadata) ==================== */
 import {
-  Connection, PublicKey, Transaction, SystemProgram, Keypair
+  Connection, PublicKey, Transaction, SystemProgram, Keypair, ComputeBudgetProgram
 } from "https://esm.sh/@solana/web3.js@1.95.3";
 
+import {
+  getMinimumBalanceForRentExemptMint,
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  createInitializeMint2Instruction,
+  createAssociatedTokenAccountInstruction,
+  getAssociatedTokenAddress,
+  createMintToInstruction,
+} from "https://esm.sh/@solana/spl-token@0.4.9";
 
 import {
-  PROGRAM_ID as TOKEN_METADATA_PROGRAM_ID,
   createCreateMetadataAccountV3Instruction,
-  createCreateMasterEditionV3Instruction
-} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
+  createCreateMasterEditionV3Instruction,
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0";
+
+/* Programm-ID der Token-Metadata (nicht aus dem Paket importieren) */
+const TM_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
@@ -59,16 +77,30 @@ import {
 /* ==================== HELPERS ==================== */
 const $ = (id) => document.getElementById(id);
 const setStatus = (t, cls = "") => { const el = $("status"); if (!el) return; el.className = `status ${cls}`; el.innerHTML = t; };
-const log = (msg, obj) => { const el = $("log"); if (!el) return;
+const log = (msg, obj) => {
+  const el = $("log"); if (!el) return;
   const time = new Date().toLocaleTimeString();
   el.textContent += `[${time}] ${msg}${obj ? " " + JSON.stringify(obj,null,2) : ""}\n`;
   el.scrollTop = el.scrollHeight;
 };
-const setSpin = (on) => { const sp = document.querySelector(".spinner"); const lbl = document.querySelector(".btn-label"); if (!sp || !lbl) return; sp.hidden = !on; lbl.style.opacity = on ? 0.75 : 1; };
-const toHttp = (u) => { if (!u) return u; if (u.startsWith("ipfs://")) return `${CFG.GATEWAYS[0]}/${u.replace("ipfs://","").replace(/^ipfs\//,"")}`; if (u.startsWith("/ipfs/")) return `${CFG.GATEWAYS[0]}${u}`; return u; };
+const setSpin = (on) => {
+  const sp = document.querySelector(".spinner");
+  const lbl = document.querySelector(".btn-label");
+  if (!sp || !lbl) return;
+  sp.hidden = !on; lbl.style.opacity = on ? 0.75 : 1;
+};
+const toHttp = (u) => {
+  if (!u) return u;
+  if (u.startsWith("ipfs://")) return `${CFG.GATEWAYS[0]}/${u.replace("ipfs://","").replace(/^ipfs\//,"")}`;
+  if (u.startsWith("/ipfs/"))  return `${CFG.GATEWAYS[0]}${u}`;
+  return u;
+};
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
-const eqPk = (a, b) => { try { return (typeof a === 'string' ? a : a?.toString?.()) === (typeof b === 'string' ? b : b?.toString?.()); } catch { return false; } };
+const eqPk = (a, b) => {
+  try { return (typeof a === 'string' ? a : a?.toString?.()) === (typeof b === 'string' ? b : b?.toString?.()); }
+  catch { return false; }
+};
 
 /* ==================== STATE ==================== */
 let connection = null;
@@ -119,7 +151,8 @@ async function connectPhantom() {
   try {
     const w = window.solana;
     if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
-    const resp = await w.connect(); // Popup
+
+    const resp = await w.connect({ onlyIfTrusted: false });
     phantom = w;
 
     await ensureConnection();
@@ -133,7 +166,7 @@ async function connectPhantom() {
 
     await updateBalance();
 
-    phantom.on?.("disconnect", () => {
+    phantom.on("disconnect", () => {
       $("walletLabel").textContent = "nicht verbunden";
       $("connectBtn").textContent  = "Mit Phantom verbinden";
       $("mintBtn").disabled = true;
@@ -191,7 +224,9 @@ function recomputeAvailable() {
 }
 async function bootstrapClaims() {
   const arr = await fetchClaims();
-  claimedSet = new Set(arr);
+  // akzeptiere sowohl {claimed:[...]} als auch plain array
+  const list = Array.isArray(arr) ? arr : Array.isArray(arr?.claimed) ? arr.claimed : [];
+  claimedSet = new Set(list);
   recomputeAvailable();
 }
 async function isIdAvailable(id) {
@@ -254,6 +289,7 @@ async function updatePreview() {
 }
 function renderPreview(id, meta) {
   $("uriStatus").textContent = "✅ Metadaten geladen";
+
   const errs = [];
   if (!meta.name) errs.push("Name fehlt");
   if (!meta.image && !meta.animation_url) errs.push("Medien fehlen");
@@ -277,20 +313,17 @@ function renderPreview(id, meta) {
 }
 
 /* ==================== PDAs ==================== */
-const TM_PID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-async function findMetadataPda(mint) {
-  const [pda] = await PublicKey.findProgramAddress(
-    [Buffer.from("metadata"), TM_PID.toBuffer(), mint.toBuffer()],
-    TM_PID
-  );
-  return pda;
+function findMetadataPda(mint) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("metadata"), TM_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    TM_PROGRAM_ID
+  )[0];
 }
-async function findMasterEditionPda(mint) {
-  const [pda] = await PublicKey.findProgramAddress(
-    [Buffer.from("metadata"), TM_PID.toBuffer(), mint.toBuffer(), Buffer.from("edition")],
-    TM_PID
-  );
-  return pda;
+function findMasterEditionPda(mint) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("metadata"), TM_PROGRAM_ID.toBuffer(), mint.toBuffer(), Buffer.from("edition")],
+    TM_PROGRAM_ID
+  )[0];
 }
 
 /* ==================== MINT ==================== */
@@ -310,57 +343,58 @@ async function doMint() {
     const donationLamports = Math.round(donation * 1e9);
 
     await updateBalance().catch(()=>{});
+
     setStatus("Baue Transaktion...", "info");
     log("Start mint", { id, donation });
 
     const conn = await ensureConnection();
-    const wallet = phantom;
-    const payer = wallet.publicKey;
+    const payer = phantom.publicKey;
 
-    // --- Keys & derived accounts
     const mintKeypair = Keypair.generate();
     const mint = mintKeypair.publicKey;
-    const ata = await getAssociatedTokenAddress(mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
-    const metadataPda = await findMetadataPda(mint);
-    const masterEditionPda = await findMasterEditionPda(mint);
+    const nftName = `Pi Pyramid #${id}`;
+    const nftUri  = uriForId(id);
     const creatorPk = new PublicKey(CFG.CREATOR);
     const collectionMint = new PublicKey(CFG.COLLECTION_MINT);
     const isSelf = payer.equals(creatorPk);
 
-    // --- Rent for mint account
-    const rentLamports = await conn.getMinimumBalanceForRentExemption(MINT_SIZE);
+    const ata = await getAssociatedTokenAddress(mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
 
     const tx = new Transaction();
 
-    // Optional: fixed fee + donation
+    // optional ComputeBudget (hilft bei großen Metadaten)
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5_000 }));
+
+    // Fee + Donation (nur wenn nicht self)
     if (!isSelf) {
-      tx.add(
-        SystemProgram.transfer({ fromPubkey: payer, toPubkey: creatorPk, lamports: Math.round(CFG.MINT_FEE_SOL * 1e9) })
-      );
+      tx.add(SystemProgram.transfer({ fromPubkey: payer, toPubkey: creatorPk, lamports: Math.round(CFG.MINT_FEE_SOL * 1e9) }));
       if (donationLamports > 0) {
         tx.add(SystemProgram.transfer({ fromPubkey: payer, toPubkey: creatorPk, lamports: donationLamports }));
       }
     }
 
-    // 1) Create Mint account
+    // Mint-Account anlegen + initialisieren (0 Dezimalstellen, mintAuthority = payer)
+    const lamportsForMint = await getMinimumBalanceForRentExemptMint(conn);
     tx.add(SystemProgram.createAccount({
       fromPubkey: payer,
       newAccountPubkey: mint,
-      lamports: rentLamports,
+      lamports: lamportsForMint,
       space: MINT_SIZE,
-      programId: TOKEN_PROGRAM_ID
+      programId: TOKEN_PROGRAM_ID,
     }));
+    tx.add(createInitializeMint2Instruction(mint, 0, payer, payer, TOKEN_PROGRAM_ID));
 
-    // 2) Initialize Mint (decimals 0, mintAuthority = payer, freezeAuthority = payer)
-    tx.add(createInitializeMintInstruction(mint, 0, payer, payer, TOKEN_PROGRAM_ID));
-
-    // 3) Create ATA
+    // ATA anlegen
     tx.add(createAssociatedTokenAccountInstruction(payer, ata, payer, mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
 
-    // 4) Mint 1 token to ATA
+    // 1 Token minten
     tx.add(createMintToInstruction(mint, ata, payer, 1, [], TOKEN_PROGRAM_ID));
 
-    // 5) Metadata
+    // Metadaten + MasterEdition
+    const metadataPda = findMetadataPda(mint);
+    const masterEditionPda = findMasterEditionPda(mint);
+
     tx.add(createCreateMetadataAccountV3Instruction(
       {
         metadata: metadataPda,
@@ -372,21 +406,20 @@ async function doMint() {
       {
         createMetadataAccountArgsV3: {
           data: {
-            name: `Pi Pyramid #${id}`,
-            symbol: "PP",
-            uri: uriForId(id),
+            name: nftName,
+            symbol: "",
+            uri: nftUri,
             sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-            creators: [{ address: creatorPk, verified: false, share: 100 }],
-            collection: { key: collectionMint, verified: false },  // unverified; Verifikation kann nur Collection-Authority
-            uses: null
+            creators: [{ address: creatorPk, verified: Number(isSelf), share: 100 }],
+            collection: { key: collectionMint, verified: false },
+            uses: null,
           },
           isMutable: true,
-          collectionDetails: null
+          collectionDetails: null,
         }
       }
     ));
 
-    // 6) Master Edition (supply 0 = non-printable)
     tx.add(createCreateMasterEditionV3Instruction(
       {
         edition: masterEditionPda,
@@ -394,41 +427,32 @@ async function doMint() {
         updateAuthority: payer,
         mintAuthority: payer,
         payer,
-        metadata: metadataPda
+        metadata: metadataPda,
       },
       { createMasterEditionArgs: { maxSupply: 0 } }
     ));
 
-    // --- Finalize & sign
-    tx.feePayer = payer;
-    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('finalized');
+    // Blockhash + Fee-Payer
+    const { blockhash } = await conn.getLatestBlockhash('confirmed');
     tx.recentBlockhash = blockhash;
+    tx.feePayer = payer;
 
-    // The new mint account needs its own signature
+    // Lokaler Signer (Mint) + Phantom Signatur
     tx.partialSign(mintKeypair);
-
-    // Phantom signs as payer
     const signed = await phantom.signTransaction(tx);
 
-    // Send raw (skip preflight to avoid simulate errors)
-    const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: true, maxRetries: 3 });
-    log("sent", { signature: sig });
+    // Senden (skipPreflight um Simulations-Macken zu umgehen)
+    const signature = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: true });
+    await conn.confirmTransaction(signature, 'confirmed');
 
-    // Confirm
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-
-    const link = `https://solscan.io/tx/${sig}`;
+    log("sent", { signature });
+    const link = `https://solscan.io/tx/${signature}`;
     setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
 
     await markClaimed(id);
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
   } catch (e) {
-    const msg = e?.message || String(e);
-    if (/Transaction simulation failed|simulation/i.test(msg)) {
-      // wir senden ohnehin mit skipPreflight – also nur loggen
-      log("simulate hint", msg);
-    }
     handleError("Mint fehlgeschlagen:", e);
   } finally {
     setSpin(false);
@@ -461,7 +485,6 @@ function wireUI() {
 
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer = $("customDonationContainer");
-  const customInput = $("customDonationInput");
 
   const applyDonationSelection = () => {
     pills.forEach(p => p.classList.remove("active"));
@@ -486,7 +509,7 @@ function wireUI() {
     radio.addEventListener("change", applyDonationSelection);
   });
 
-  customInput?.addEventListener("input", updateEstimatedCost);
+  $("customDonationInput")?.addEventListener("input", updateEstimatedCost);
 
   applyDonationSelection();
   updateEstimatedCost();
