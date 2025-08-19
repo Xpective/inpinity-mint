@@ -48,8 +48,45 @@ import {
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 // ✅ stabiler Namespace-Import (Browser) – erzeugt die V3-Instruktionen
-import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022";
+/* ==================== Metaplex TM Loader (robust) ==================== */
+let tm = null;
 
+async function loadTokenMetadata() {
+  if (tm) return tm;
+
+  const candidates = [
+    // esm.sh (stabil mit ?bundle)
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
+    // jsDelivr (falls esm.sh zickt)
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
+    // Skypack (Fallback)
+    "https://cdn.skypack.dev/@metaplex-foundation/mpl-token-metadata@3.4.0?min"
+  ];
+
+  let lastErr = null;
+  for (const url of candidates) {
+    try {
+      const mod = await import(/* @vite-ignore */ url);
+      // Einige CDNs liefern default-Wrapper
+      const m = mod?.default ?? mod;
+      if (
+        typeof m.createCreateMetadataAccountV3Instruction === "function" &&
+        typeof m.createCreateMasterEditionV3Instruction === "function"
+      ) {
+        tm = m;
+        console.log("[TM] loaded:", url);
+        return tm;
+      }
+      lastErr = new Error(`Loaded but exports missing from ${url}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(
+    "Metaplex Token Metadata konnte nicht geladen werden (keine V3-Exports). " +
+    "Bitte harte Aktualisierung (Cmd/Ctrl+Shift+R) oder CDN erreichbar?"
+  );
+}
 /* ==================== SEEDS (Browser-kompatibel) ==================== */
 const te = new TextEncoder();
 
@@ -320,7 +357,30 @@ function renderPreview(id, meta) {
   if (Array.isArray(meta.attributes)) add("Attribute", meta.attributes.map(a => `${a.trait_type||'Trait'}: ${a.value}`).join(" · "));
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
+async function fetchAccountInfo(conn, pubkey) {
+  try { return await conn.getAccountInfo(pubkey, "confirmed"); }
+  catch { return null; }
+}
 
+async function assertCanVerifyCollection(conn, payer, collectionMint) {
+  // 1) Collection-Metadata & -Edition müssen existieren
+  const collMd  = findMetadataPda(collectionMint);
+  const collEd  = findMasterEditionPda(collectionMint);
+  const [mdAcc, edAcc] = await Promise.all([
+    fetchAccountInfo(conn, collMd),
+    fetchAccountInfo(conn, collEd),
+  ]);
+  if (!mdAcc || !edAcc) {
+    throw new Error("Collection-PDAs nicht gefunden. Stimmt COLLECTION_MINT?");
+  }
+
+  // 2) Lies UpdateAuthority der Collection aus der Metadata-Account-Data (leichtgewichtige Prüfung)
+  //    Wir checken nur „irgendwas ist da und du bist Signer“.
+  //    Die eigentliche Programmlogik erzwingt später sowieso die Authority.
+  if (!payer) throw new Error("Kein Payer");
+  // Wenn du hier noch härter prüfen willst: komplette Metadata decodieren (separat),
+  // aber für den Flow reicht der on-chain Authority-Check in der Verify-Instruction.
+}
 /* ==================== MINT ==================== */
 async function doMint() {
   try {
@@ -330,6 +390,9 @@ async function doMint() {
     if (lblEl) { lblEl.dataset.orig = lblEl.textContent; lblEl.textContent = "Verarbeite..."; }
     setSpin(true);
 
+    // 🔹 Lade Metaplex TM robust
+    const TM = await loadTokenMetadata();
+
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
     const id = Number($("tokenId").value || 0);
     if (!Number.isInteger(id) || id < 0 || id > CFG.MAX_INDEX) throw new Error(`Ungültige ID (0–${CFG.MAX_INDEX})`);
@@ -337,15 +400,13 @@ async function doMint() {
     const donation = getSelectedDonation();
     const donationLamports = Math.round(donation * 1e9);
 
-    await updateBalance().catch(()=>{});
-
     setStatus("Baue Transaktion...", "info");
     log("Start mint", { id, donation });
 
     const connection = await ensureConnection();
     const wallet = phantom;
     const payer = wallet.publicKey;
-    
+
     const mintKeypair = Keypair.generate();
     const mint = mintKeypair.publicKey;
     const nftName = `Pi Pyramid #${id}`;
@@ -355,10 +416,8 @@ async function doMint() {
     const creatorPk = new PublicKey(CFG.CREATOR);
     const isSelf = payer.equals(creatorPk);
 
-    // Associated Token Account des Empfängers
-    const associatedTokenAccount = await getAssociatedTokenAddress(
-      mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    // ✅ Collection-Preflight (wir brechen ab, wenn was nicht passt)
+    await assertCanVerifyCollection(connection, payer, collectionMint);
 
     const transaction = new Transaction();
 
@@ -400,12 +459,13 @@ async function doMint() {
     ));
 
     // === PDAs ===
+        // === PDAs ===
     const metadataPda = findMetadataPda(mint);
     const masterEditionPda = findMasterEditionPda(mint);
 
-    // === Metadata V3 (klassisch, kein pNFT) ===
+    // === Metadata V3 ===
     transaction.add(
-      tm.createCreateMetadataAccountV3Instruction(
+      TM.createCreateMetadataAccountV3Instruction(
         {
           metadata: metadataPda,
           mint,
@@ -418,24 +478,22 @@ async function doMint() {
             data: {
               name: nftName,
               symbol: "InPi",
-              uri: nftUri, // ipfs://.../<id>.json
-              sellerFeeBasisPoints: CFG.ROYALTY_BPS, // 700 -> 7%
-              creators: [
-                { address: creatorPk, verified: payer.equals(creatorPk), share: 100 }
-              ],
+              uri: nftUri,
+              sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+              creators: [{ address: creatorPk, verified: isSelf, share: 100 }],
               collection: { key: collectionMint, verified: false },
               uses: null,
             },
             isMutable: true,
-            collectionDetails: null
-          }
+            collectionDetails: null,
+          },
         }
       )
     );
 
-    // === Master Edition V3 (maxSupply = 0 -> 1/1) ===
+    // === Master Edition V3 (1/1) ===
     transaction.add(
-      tm.createCreateMasterEditionV3Instruction(
+      TM.createCreateMasterEditionV3Instruction(
         {
           edition: masterEditionPda,
           mint,
@@ -447,6 +505,26 @@ async function doMint() {
         { createMasterEditionArgs: { maxSupply: 0 } }
       )
     );
+
+    // === Collection verify (Sized) – nur wenn du Authority bist
+    if (isSelf) {
+      const canSized = typeof TM.createVerifySizedCollectionItemInstruction === "function";
+      const collMdPda = findMetadataPda(collectionMint);
+      const collEdPda = findMasterEditionPda(collectionMint);
+
+      transaction.add(
+        (canSized
+          ? TM.createVerifySizedCollectionItemInstruction
+          : TM.createSetAndVerifySizedCollectionItemInstruction)({
+            metadata: metadataPda,
+            collectionAuthority: payer,
+            payer,
+            collectionMint,
+            collection: collMdPda,
+            collectionMasterEditionAccount: collEdPda,
+          })
+      );
+    }
 
     // === Collection verifizieren (nur wenn du Authority bist) ===
     if (isSelf) {
@@ -473,6 +551,20 @@ async function doMint() {
     transaction.recentBlockhash = blockhash;
     transaction.feePayer = payer;
 
+    // … nachdem du recentBlockhash/feePayer gesetzt hast:
+    transaction.partialSign(mintKeypair);
+    const txForSim = await wallet.signTransaction(transaction);
+    const sim = await connection.simulateTransaction(txForSim);
+    if (sim?.value?.err) {
+      console.warn("simulateTransaction error:", sim.value.err, sim.value.logs);
+      throw new Error("Simulation fehlgeschlagen (siehe Konsole/Logs). Prüfe Collection-Authority & PDAs.");
+    }
+
+    // Wenn OK → normal signieren/senden:
+    const signed = txForSim; // bereits signiert
+    const signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+    await connection.confirmTransaction(signature, "confirmed");
+    
     // 🔏 Signaturen
     transaction.partialSign(mintKeypair);                 // 1) Mint Account
     setStatus("Bitte im Wallet signieren…", "info");
