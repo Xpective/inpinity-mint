@@ -50,8 +50,12 @@ import {
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 // Namespace-Import der Token-Metadata-Instruction-Fabrikfunktionen
-import * as mpl from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0";
-
+// ✅ neu – ganz oben bei den Imports einfügen
+import {
+  createCreateMetadataAccountV3Instruction,
+  createCreateMasterEditionV3Instruction,
+  createSetAndVerifySizedCollectionItemInstruction,
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?exports=createCreateMetadataAccountV3Instruction,createCreateMasterEditionV3Instruction,createSetAndVerifySizedCollectionItemInstruction";
 /* ==================== SEEDS (Browser-kompatibel, kein Buffer) ==================== */
 const te = new TextEncoder();
 const METADATA_SEED = te.encode("metadata");
