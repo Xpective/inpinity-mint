@@ -1,4 +1,4 @@
-name = "inpi-proxy-nft"
+name = "inpinity-rpc-proxy"
 main = "src/index.ts"
 compatibility_date = "2024-11-21"
 account_id = "ee57d3036a25f352ab089a94066a03c1"
