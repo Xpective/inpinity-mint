@@ -36,16 +36,7 @@ const CFG = {
   ],
 };
 
-/* ==================== (A) EVM SHIM gegen injected.bundle.js ==================== */
-(function evmNoopShim(){
-  try {
-    const w = window;
-    if (!w.ethereum) w.ethereum = {};
-    if (typeof w.ethereum.setExternalProvider !== "function") {
-      w.ethereum.setExternalProvider = function(){ /* no-op */ };
-    }
-  } catch {}
-})();
+
 
 /* ==================== IMPORTS (Solana) ==================== */
 import {
