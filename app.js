@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v14";
+const BUILD_TAG = "mint-v15";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -25,7 +25,7 @@ const CFG = {
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
-  // Stabilstes Gateway zuerst (Custom-IPFS weiter hinten bis DNS 100% steht)
+  // Stabilstes Gateway zuerst
   GATEWAYS: [
     "https://ipfs.io/ipfs",
     "https://cloudflare-ipfs.com/ipfs",
@@ -37,11 +37,15 @@ const CFG = {
 import {
   generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports
 } from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
-import { createUmi as createUmiDefaults } from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
-import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
+import {
+  createUmi as createUmiDefaults, signerPayer, signerIdentity
+} from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
+import {
+  createSignerFromWalletAdapter
+} from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 
 import {
-  mplTokenMetadata, createV1, mintV1
+  mplTokenMetadata, createV1, mintV1, verifyCollectionV1, findMetadataPda
 } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
 
 import {
@@ -117,10 +121,9 @@ async function pickRpcEndpoint() {
       if (r.ok) return url;
     } catch {}
   }
-  // Letzter Rettungsanker (sollte im Normalfall nicht erreicht werden):
+  // Letzter Rettungsanker – sollte praktisch nie erreicht werden:
   return "https://api.mainnet-beta.solana.com";
 }
-
 async function ensureConnection() {
   if (rpcConn) return rpcConn;
   const chosen = await pickRpcEndpoint();
@@ -153,9 +156,11 @@ async function connectPhantom() {
     const resp = await w.connect(); // Popup
     phantom = w;
 
-    // Umi direkt mit deinem Worker-Endpoint initialisieren (kein rpc.setEndpoint!)
+    // Umi mit Phantom als Identity **und** Payer verbinden
+    const waSigner = createSignerFromWalletAdapter(phantom);
     umi = createUmiDefaults(CFG.RPCS[0])
-      .use(walletAdapterIdentity(phantom))
+      .use(signerIdentity(waSigner)) // Signer = Phantom
+      .use(signerPayer(waSigner))    // Payer  = Phantom  ✅
       .use(mplTokenMetadata());
 
     // web3 Connection über Worker initialisieren
@@ -344,30 +349,47 @@ async function doMint() {
       mint: mint.publicKey, owner: umi.identity.publicKey
     });
 
+    const creatorPk = umiPk(CFG.CREATOR);
+    const payerPk58 = umi.identity.publicKey.toString();
+    const creatorPk58 = creatorPk.toString();
+    const isSelf = eqPk(payerPk58, creatorPk58);
+
     let builder = transactionBuilder()
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
-      .add(setComputeUnitPrice(umi, { microLamports: 5_000 }))
-      .add(transferSol(umi, {
-        from: umi.identity, to: umiPk(CFG.CREATOR),
-        amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9))
-      }));
+      .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
-    if (donationLamports > 0) {
+    // Transfers nur wenn Sender != Empfänger (Self-mint: keine Zahlung an dich selbst)
+    if (!isSelf) {
       builder = builder.add(transferSol(umi, {
-        from: umi.identity, to: umiPk(CFG.CREATOR),
-        amount: lamports(donationLamports)
+        from: umi.identity,
+        to: creatorPk,
+        amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9)),
       }));
+      if (donationLamports > 0) {
+        builder = builder.add(transferSol(umi, {
+          from: umi.identity,
+          to: creatorPk,
+          amount: lamports(donationLamports),
+        }));
+      }
+    } else if (donationLamports > 0) {
+      log("Self-mint: Donation übersprungen (Sender=Empfänger).", { donationLamports });
     }
 
+    // createV1 mit payer=Phantom
     builder = builder.add(createV1(umi, {
-      mint, name: nftName, uri: nftUri,
+      mint,
+      name: nftName,
+      uri: nftUri,
       sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-      creators: some([{ address: umiPk(CFG.CREATOR), verified: false, share: 100 }]),
+      creators: some([{ address: creatorPk, verified: false, share: 100 }]),
       collection: some({ key: collectionMint, verified: false }),
       tokenStandard: CFG.TOKEN_STANDARD,
       isMutable: true,
+      payer: umi.identity,
     }));
 
+    // mintV1 mit payer=Phantom
     builder = builder.add(mintV1(umi, {
       mint: mint.publicKey,
       authority: umi.identity,
@@ -375,12 +397,23 @@ async function doMint() {
       amount: 1,
       tokenOwner: umi.identity.publicKey,
       tokenStandard: CFG.TOKEN_STANDARD,
+      payer: umi.identity,
     }));
 
-    // ✨ Umi übernimmt Blockhash + Signieren + Senden + Confirm
+    // ✅ Auto-Verify der Collection **nur** beim Creator-Self-Mint
+    if (isSelf) {
+      const metadataPda = findMetadataPda(umi, { mint: mint.publicKey });
+      builder = builder.add(verifyCollectionV1(umi, {
+        metadata: metadataPda,
+        collectionMint,
+        collectionAuthority: umi.identity, // du bist der Collection-Authority
+      }));
+      log("Collection verify appended (self-mint).");
+    }
+
     setStatus("Bitte im Wallet signieren…", "info");
     const sig = await builder.sendAndConfirm(umi, {
-      send: { commitment: 'confirmed' },
+      send: { commitment: 'confirmed', skipPreflight: true }, // keine Simulation
       confirm: { strategy: { type: 'blockhash' } }
     });
     const signature = typeof sig === 'string' ? sig : base58.encode(sig);
@@ -393,6 +426,9 @@ async function doMint() {
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
   } catch (e) {
+    // Falls web3.js SendTransactionError kommt, Logs anzeigen wenn vorhanden
+    const logs = e?.logs || e?.cause?.logs;
+    if (logs) log("RPC logs", logs);
     handleError("Mint fehlgeschlagen:", e);
   } finally {
     setSpin(false);
