@@ -92,6 +92,10 @@ const toHttp = (u) => {
 };
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
+const eqPk = (a, b) => {
+  try { return (typeof a === 'string' ? a : a?.toString?.()) === (typeof b === 'string' ? b : b?.toString?.()); }
+  catch { return false; }
+};
 
 /* ==================== STATE ==================== */
 let umi = null;
