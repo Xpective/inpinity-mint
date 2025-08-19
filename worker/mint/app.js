@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v15-phantom";
+const BUILD_TAG = "mint-v16-phantom";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -33,10 +33,28 @@ const CFG = {
 
 /* ==================== IMPORTS ==================== */
 // Web3.js direkt importieren
-import { Connection, PublicKey, Transaction, SystemProgram, Keypair, sendAndConfirmTransaction } from "https://esm.sh/@solana/web3.js@1.95.3";
-import { createCreateMetadataAccountV3Instruction, createCreateMasterEditionV3Instruction, createMintNewEditionFromMasterEditionViaTokenInstruction } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
-import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddress, createMintToInstruction, getAccount, MINT_SIZE, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "https://esm.sh/@solana/spl-token@0.4.9";
+// Web3.js + SPL + Metaplex (ohne Umi)
+import {
+  Connection, PublicKey, Transaction, SystemProgram, Keypair,
+  ComputeBudgetProgram
+} from "https://esm.sh/@solana/web3.js@1.95.3";
 
+import {
+  getMinimumBalanceForRentExemptMint,
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  createInitializeMint2Instruction,
+  createAssociatedTokenAccountInstruction,
+  getAssociatedTokenAddress,
+  createMintToInstruction
+} from "https://esm.sh/@solana/spl-token@0.4.9";
+
+import {
+  createCreateMetadataAccountV3Instruction,
+  createCreateMasterEditionV3Instruction,
+  createVerifySizedCollectionItemInstruction
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
@@ -54,6 +72,35 @@ import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddress, cre
   };
 })();
 
+// Metaplex Token Metadata Program ID (fest)
+const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
+  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+);
+
+// PDA: Metadata(mint)
+function findMetadataPda(mint) {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("metadata"),
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+    ],
+    TOKEN_METADATA_PROGRAM_ID
+  )[0];
+}
+
+// PDA: MasterEdition(mint)
+function findMasterEditionPda(mint) {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("metadata"),
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+      Buffer.from("edition"),
+    ],
+    TOKEN_METADATA_PROGRAM_ID
+  )[0];
+}
 /* ==================== HELPERS ==================== */
 const $ = (id) => document.getElementById(id);
 const setStatus = (t, cls = "") => { const el = $("status"); if (!el) return; el.className = `status ${cls}`; el.innerHTML = t; };
