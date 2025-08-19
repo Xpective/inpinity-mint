@@ -120,6 +120,22 @@
   </main>
 
   <!-- Lade Metaplex TM (UMD) ohne CORS-Ärger -->
+  <script>
+  (function evmNoopShim(){
+    try {
+      const w = window;
+      if (!w.ethereum) w.ethereum = {};
+      if (typeof w.ethereum.setExternalProvider !== "function") {
+        Object.defineProperty(w.ethereum, "setExternalProvider", {
+          value: function(){ /* no-op */ },
+          writable: false,
+          configurable: true
+        });
+      }
+    } catch {}
+  })();
+  </script>
+  
   <script src="https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
