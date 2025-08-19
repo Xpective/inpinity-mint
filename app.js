@@ -1,11 +1,6 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
 const BUILD_TAG = "mint-v16-phantom";
-// Falls UMD vorher via <script> geladen wurde:
-if (!window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
-  // dann später per loadTokenMetadata(); ansonsten:
-} else {
-  tm = window.mplTokenMetadata;
-}
+
 /* ==================== KONFIG ==================== */
 const CFG = {
   RPCS: [
@@ -68,7 +63,14 @@ let tm = null;
 async function loadTokenMetadata() {
   if (tm) return tm;
 
-  // 1) ESM (gebundelt) – keine externen Abhängigkeiten
+  // Falls UMD per <script> schon da ist → direkt nutzen
+  if (window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
+    tm = window.mplTokenMetadata;
+    console.log("[TM] UMD preloaded via <script>");
+    return tm;
+  }
+
+  // 1) ESM (gebundelt) – ohne externe Abhängigkeiten
   const esmCandidates = [
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
@@ -140,40 +142,6 @@ async function loadTokenMetadata() {
   throw new Error(
     "Metaplex Token Metadata konnte nicht geladen werden. " +
     "Lade die UMD-Variante oder lege eine lokale Vendor-Datei ab."
-  );
-}
-
-  console.error("[TM] all imports failed. Last error:", lastErr);
-  throw new Error(
-    "Metaplex Token Metadata konnte nicht geladen werden. " +
-    "Lade die UMD-Variante oder lege eine lokale Vendor-Datei ab."
-  );
-}
-
-  let lastErr = null;
-  for (const url of candidates) {
-    try {
-      const ok = url.startsWith(location.origin) ? true : await ping(url);
-      if (!ok) { lastErr = new Error(`HEAD failed for ${url}`); continue; }
-      const mod = await import(/* @vite-ignore */ url);
-      const m = mod?.default ?? mod;
-      if (typeof m.createCreateMetadataAccountV3Instruction === "function" &&
-          typeof m.createCreateMasterEditionV3Instruction === "function") {
-        tm = m;
-        console.log("[TM] loaded:", url);
-        return tm;
-      }
-      lastErr = new Error(`Loaded ${url} but V3 exports missing`);
-    } catch (e) {
-      lastErr = e;
-      console.warn("[TM] import failed:", url, e);
-    }
-  }
-
-  console.error("[TM] all imports failed. Last error:", lastErr);
-  throw new Error(
-    "Metaplex Token Metadata konnte nicht geladen werden. " +
-    "Lege die lokale Vendor-Datei ab oder aktiviere einen Proxy."
   );
 }
 
@@ -667,7 +635,7 @@ async function doMint() {
       TM.createCreateMasterEditionV3Instruction(
         {
           edition: masterEditionPda,
-          mint,
+        mint,
           updateAuthority: payer,
           mintAuthority: payer,
           payer,
@@ -677,45 +645,79 @@ async function doMint() {
       )
     );
 
-// === Collection verify – sized ODER non-sized
-if (isSelf) {
-  const collMdPda = findMetadataPda(collectionMint);
-  const collEdPda = findMasterEditionPda(collectionMint);
+    // === Collection verify – sized ODER non-sized
+    if (isSelf) {
+      const collMdPda = findMetadataPda(collectionMint);
+      const collEdPda = findMasterEditionPda(collectionMint);
 
-  const hasSizedVerify = typeof tm.createVerifySizedCollectionItemInstruction === "function";
-  const hasSetAndSized  = typeof tm.createSetAndVerifySizedCollectionItemInstruction === "function";
-  const hasLegacyVerify = typeof tm.createVerifyCollectionInstruction === "function";
-  const hasLegacySet    = typeof tm.createSetAndVerifyCollectionInstruction === "function";
+      const hasSizedVerify = typeof tm.createVerifySizedCollectionItemInstruction === "function";
+      const hasSetAndSized  = typeof tm.createSetAndVerifySizedCollectionItemInstruction === "function";
+      const hasLegacyVerify = typeof tm.createVerifyCollectionInstruction === "function";
+      const hasLegacySet    = typeof tm.createSetAndVerifyCollectionInstruction === "function";
 
-  if (hasSizedVerify || hasSetAndSized) {
-    const sizedIx = (hasSizedVerify
-      ? tm.createVerifySizedCollectionItemInstruction
-      : tm.createSetAndVerifySizedCollectionItemInstruction);
-    transaction.add(
-      sizedIx({
-        metadata: metadataPda,
-        collectionAuthority: payer,
-        payer,
-        collectionMint,
-        collection: collMdPda,
-        collectionMasterEditionAccount: collEdPda,
-      })
+      if (hasSizedVerify || hasSetAndSized) {
+        const sizedIx = (hasSizedVerify
+          ? tm.createVerifySizedCollectionItemInstruction
+          : tm.createSetAndVerifySizedCollectionItemInstruction);
+        transaction.add(
+          sizedIx({
+            metadata: metadataPda,
+            collectionAuthority: payer,
+            payer,
+            collectionMint,
+            collection: collMdPda,
+            collectionMasterEditionAccount: collEdPda,
+          })
+        );
+      } else if (hasLegacyVerify || hasLegacySet) {
+        const legacyIx = (hasLegacyVerify
+          ? tm.createVerifyCollectionInstruction
+          : tm.createSetAndVerifyCollectionInstruction);
+        transaction.add(
+          legacyIx({
+            metadata: metadataPda,
+            collectionAuthority: payer,
+            payer,
+            collectionMint,
+            collection: collMdPda,
+          })
+        );
+      } else {
+        console.warn("[TM] Keine passende Verify-Instruction im Modul gefunden.");
+      }
+    }
+
+    setStatus("Bitte im Wallet signieren…", "info");
+    const signature = await signSendWithRetry(connection, transaction, wallet, mintKeypair);
+
+    log("sent", { signature });
+    const link = `https://solscan.io/tx/${signature}`;
+    setStatus(
+      `✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>
+       <button id="copyTx" class="btn-mini">Copy Tx</button>`,
+      "ok"
     );
-  } else if (hasLegacyVerify || hasLegacySet) {
-    const legacyIx = (hasLegacyVerify
-      ? tm.createVerifyCollectionInstruction
-      : tm.createSetAndVerifyCollectionInstruction);
-    transaction.add(
-      legacyIx({
-        metadata: metadataPda,
-        collectionAuthority: payer,
-        payer,
-        collectionMint,
-        collection: collMdPda,
-      })
-    );
-  } else {
-    console.warn("[TM] Keine passende Verify-Instruction im Modul gefunden.");
+    setTimeout(()=>{
+      const c = document.getElementById("copyTx");
+      if (c) c.onclick = ()=>navigator.clipboard.writeText(signature);
+    },0);
+
+    await safeMarkClaimed(id);
+    claimedSet.add(id); recomputeAvailable();
+    await setRandomFreeId();
+    await updateBalance();
+
+  } catch (e) {
+    handleError("Mint fehlgeschlagen:", e);
+  } finally {
+    setSpin(false);
+    const btn = $("mintBtn");
+    if (btn) {
+      btn.disabled = false;
+      const lbl = btn.querySelector(".btn-label");
+      if (lbl && originalBtnText) lbl.textContent = originalBtnText;
+    }
+    inFlight = false;
   }
 }
 
