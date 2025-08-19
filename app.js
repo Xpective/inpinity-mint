@@ -402,30 +402,56 @@ async function doMint() {
     const masterEditionPda = findMasterEditionPda(mint);
 
     // Metadata V3
-    ixs.push(mpl.createCreateMetadataAccountV3Instruction(
-      {
-        metadata: metadataPda,
-        mint,
-        mintAuthority: payer,
-        payer,
-        updateAuthority: payer,
+ixs.push(createCreateMetadataAccountV3Instruction(
+  {
+    metadata: metadataPda,
+    mint,
+    mintAuthority: payer,
+    payer,
+    updateAuthority: payer,
+  },
+  {
+    createMetadataAccountArgsV3: {
+      data: {
+        name: nftName,
+        symbol: "InPi",
+        uri: nftUri,
+        sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+        creators: [{ address: creatorPk, verified: Number(isSelf), share: 100 }],
+        collection: { key: collectionMint, verified: false },
+        uses: null,
       },
-      {
-        createMetadataAccountArgsV3: {
-          data: {
-            name: nftName,
-            symbol: "InPi",
-            uri: nftUri,
-            sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-            creators: [{ address: creatorPk, verified: Number(isSelf), share: 100 }],
-            collection: { key: collectionMint, verified: false },
-            uses: null,
-          },
-          isMutable: true,
-          collectionDetails: null
-        }
-      }
-    ));
+      isMutable: true,
+      collectionDetails: null
+    }
+  }
+));
+
+// MasterEdition V3
+ixs.push(createCreateMasterEditionV3Instruction(
+  {
+    edition: masterEditionPda,
+    mint,
+    updateAuthority: payer,
+    mintAuthority: payer,
+    payer,
+    metadata: metadataPda,
+  },
+  { createMasterEditionArgs: { maxSupply: 0 } }
+));
+
+// Collection setzen + verifizieren
+const collectionMetadataPda = findMetadataPda(collectionMint);
+const collectionMasterEditionPda = findMasterEditionPda(collectionMint);
+ixs.push(createSetAndVerifySizedCollectionItemInstruction({
+  metadata: metadataPda,
+  collectionAuthority: payer,
+  payer,
+  updateAuthority: payer,
+  collectionMint,
+  collection: collectionMetadataPda,
+  collectionMasterEdition: collectionMasterEditionPda,
+}));
 
     // MasterEdition V3 (maxSupply 0)
     ixs.push(mpl.createCreateMasterEditionV3Instruction(
