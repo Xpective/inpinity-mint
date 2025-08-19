@@ -31,7 +31,6 @@ const CFG = {
 };
 
 /* ==================== (A) EVM SHIM gegen injected.bundle.js ==================== */
-// Falls irgendein Fremdscript window.ethereum erwartet, verhindern wir den Crash:
 (function evmNoopShim(){
   try {
     const w = window;
@@ -59,30 +58,22 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== Metaplex TM Loader (robust) ==================== */
-let tm = null;
 /* ==================== Metaplex TM Loader (sehr robust) ==================== */
 let tm = null;
 async function loadTokenMetadata() {
   if (tm) return tm;
 
-  // 1) Kandidaten: mehrere CDNs und optional lokales File
   const candidates = [
-    // CDN-Varianten (ESM, gebundelt)
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
     "https://cdn.skypack.dev/@metaplex-foundation/mpl-token-metadata@3.4.0?min",
-
-    // 2) Eigener Proxy (falls du ihn einrichtest; siehe Option C unten)
+    // eigener Proxy (falls eingerichtet):
     // "https://api.inpinity.online/vendor/mpl-token-metadata-3.4.0.mjs",
-
-    // 3) Lokale Vendor-Datei (Option B – garantiert stabil):
-    // SAME-ORIGIN -> kein CORS/CSP-Ärger mehr
-    `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs`
+    // lokale Vendor-Datei (empfohlen):
+    `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs`,
   ];
 
-  // 2) Vorab: simple Reachability-Checks, damit wir saubere Fehler zeigen
   async function ping(url) {
     try {
       const r = await fetch(url, { method: "HEAD", cache: "no-store", mode: "cors" });
@@ -93,11 +84,9 @@ async function loadTokenMetadata() {
   let lastErr = null;
   for (const url of candidates) {
     try {
-      // Reachability-Check (skippe offensichtliche Totalausfälle)
       const ok = url.startsWith(location.origin) ? true : await ping(url);
       if (!ok) { lastErr = new Error(`HEAD failed for ${url}`); continue; }
 
-      // Dinamisch importieren
       const mod = await import(/* @vite-ignore */ url);
       const m = mod?.default ?? mod;
 
@@ -117,7 +106,7 @@ async function loadTokenMetadata() {
   console.error("[TM] all imports failed. Last error:", lastErr);
   throw new Error(
     "Metaplex Token Metadata konnte nicht geladen werden. " +
-    "Nutze Option B (lokale Vendor-Datei) oder aktiviere Option C (Proxy)."
+    "Lege die lokale Vendor-Datei ab oder aktiviere den Proxy."
   );
 }
 
@@ -399,9 +388,7 @@ async function assertCanVerifyCollection(conn, payer, collectionMint) {
     fetchAccountInfo(conn, collMd),
     fetchAccountInfo(conn, collEd),
   ]);
-  if (!mdAcc || !edAcc) {
-    throw new Error("Collection-PDAs nicht gefunden. Stimmt COLLECTION_MINT?");
-  }
+  if (!mdAcc || !edAcc) throw new Error("Collection-PDAs nicht gefunden. Stimmt COLLECTION_MINT?");
   if (!payer) throw new Error("Kein Payer");
 }
 
@@ -478,7 +465,7 @@ async function doMint() {
     // ATA berechnen & anlegen
     const associatedTokenAccount = await getAssociatedTokenAddress(
       mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    ));
     transaction.add(createAssociatedTokenAccountInstruction(
       payer, associatedTokenAccount, payer, mint
     ));
