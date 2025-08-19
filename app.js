@@ -1,3 +1,9 @@
+let tm = null;
+if (window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
+  tm = window.mplTokenMetadata;               // UMD sofort benutzen
+}
+// ... dein loadTokenMetadata() behältst du als Fallback (lädt ESM → UMD)
+
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
 const BUILD_TAG = "mint-v16-phantom";
 
