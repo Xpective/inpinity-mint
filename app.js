@@ -52,6 +52,11 @@ import {
 // 👉 Ganzes Namespace importieren, um Export-Namen-Probleme zu vermeiden
 import * as mpl from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0";
 
+// Browser-seed-Helper (statt Buffer.from(...))
+const te = new TextEncoder();
+const METADATA_SEED = te.encode("metadata");
+const EDITION_SEED  = te.encode("edition");
+
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
@@ -310,15 +315,29 @@ const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
   "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 );
 
+const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
+  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+);
+
 function findMetadataPda(mint) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    [
+      METADATA_SEED,
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+    ],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 }
+
 function findMasterEditionPda(mint) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), Buffer.from("edition")],
+    [
+      METADATA_SEED,
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+      EDITION_SEED,
+    ],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 }
