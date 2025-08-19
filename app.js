@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v15-phantom";
+const BUILD_TAG = "mint-v15";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
