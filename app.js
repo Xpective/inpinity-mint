@@ -30,7 +30,19 @@ const CFG = {
   ],
 };
 
-/* ==================== IMPORTS ==================== */
+/* ==================== (A) EVM SHIM gegen injected.bundle.js ==================== */
+// Falls irgendein Fremdscript window.ethereum erwartet, verhindern wir den Crash:
+(function evmNoopShim(){
+  try {
+    const w = window;
+    if (!w.ethereum) w.ethereum = {};
+    if (typeof w.ethereum.setExternalProvider !== "function") {
+      w.ethereum.setExternalProvider = function(){ /* no-op */ };
+    }
+  } catch {}
+})();
+
+/* ==================== IMPORTS (Solana) ==================== */
 import {
   Connection, PublicKey, Transaction, SystemProgram,
   Keypair, ComputeBudgetProgram
@@ -47,27 +59,19 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-// ✅ stabiler Namespace-Import (Browser) – erzeugt die V3-Instruktionen
 /* ==================== Metaplex TM Loader (robust) ==================== */
 let tm = null;
-
 async function loadTokenMetadata() {
   if (tm) return tm;
-
   const candidates = [
-    // esm.sh (stabil mit ?bundle)
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
-    // jsDelivr (falls esm.sh zickt)
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
-    // Skypack (Fallback)
     "https://cdn.skypack.dev/@metaplex-foundation/mpl-token-metadata@3.4.0?min"
   ];
-
   let lastErr = null;
   for (const url of candidates) {
     try {
       const mod = await import(/* @vite-ignore */ url);
-      // Einige CDNs liefern default-Wrapper
       const m = mod?.default ?? mod;
       if (
         typeof m.createCreateMetadataAccountV3Instruction === "function" &&
@@ -78,17 +82,28 @@ async function loadTokenMetadata() {
         return tm;
       }
       lastErr = new Error(`Loaded but exports missing from ${url}`);
-    } catch (e) {
-      lastErr = e;
-    }
+    } catch (e) { lastErr = e; }
   }
-  throw new Error(
-    "Metaplex Token Metadata konnte nicht geladen werden (keine V3-Exports). " +
-    "Bitte harte Aktualisierung (Cmd/Ctrl+Shift+R) oder CDN erreichbar?"
-  );
+  console.error(lastErr);
+  throw new Error("Metaplex Token Metadata konnte nicht geladen werden. Harter Reload (Cmd/Ctrl+Shift+R)?");
 }
-/* ==================== SEEDS (Browser-kompatibel) ==================== */
+
+/* ==================== SEEDS / PROGRAM IDs ==================== */
 const te = new TextEncoder();
+const TOKEN_METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+
+function findMetadataPda(mint) {
+  return PublicKey.findProgramAddressSync(
+    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    TOKEN_METADATA_PROGRAM_ID
+  )[0];
+}
+function findMasterEditionPda(mint) {
+  return PublicKey.findProgramAddressSync(
+    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
+    TOKEN_METADATA_PROGRAM_ID
+  )[0];
+}
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
@@ -107,25 +122,6 @@ const te = new TextEncoder();
   };
 })();
 
-/* ==================== PROGRAM IDs ==================== */
-const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
-  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
-);
-
-/* ==================== PDA HELPERS ==================== */
-function findMetadataPda(mint) {
-  return PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    TOKEN_METADATA_PROGRAM_ID
-  )[0];
-}
-function findMasterEditionPda(mint) {
-  return PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
-    TOKEN_METADATA_PROGRAM_ID
-  )[0];
-}
-
 /* ==================== HELPERS ==================== */
 const $ = (id) => document.getElementById(id);
 const setStatus = (t, cls = "") => { const el = $("status"); if (!el) return; el.className = `status ${cls}`; el.innerHTML = t; };
@@ -139,7 +135,7 @@ const setSpin = (on) => {
   const sp = document.querySelector(".spinner");
   const lbl = document.querySelector(".btn-label");
   if (!sp || !lbl) return;
-  sp.hidden = !on; if (lbl) lbl.style.opacity = on ? 0.75 : 1;
+  sp.hidden = !on; lbl.style.opacity = on ? 0.75 : 1;
 };
 const toHttp = (u) => {
   if (!u) return u;
@@ -232,9 +228,9 @@ async function updateBalance() {
     const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString()));
     const sol = lam / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
-  } catch {
+  } catch (e) {
     $("balanceLabel").textContent = "—";
-    log("Balance nicht abrufbar (RPC).");
+    log("Balance nicht abrufbar (RPC).", String(e?.message||e));
   }
 }
 
@@ -357,13 +353,13 @@ function renderPreview(id, meta) {
   if (Array.isArray(meta.attributes)) add("Attribute", meta.attributes.map(a => `${a.trait_type||'Trait'}: ${a.value}`).join(" · "));
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
+
+/* ==================== Collection-Checks ==================== */
 async function fetchAccountInfo(conn, pubkey) {
   try { return await conn.getAccountInfo(pubkey, "confirmed"); }
   catch { return null; }
 }
-
 async function assertCanVerifyCollection(conn, payer, collectionMint) {
-  // 1) Collection-Metadata & -Edition müssen existieren
   const collMd  = findMetadataPda(collectionMint);
   const collEd  = findMasterEditionPda(collectionMint);
   const [mdAcc, edAcc] = await Promise.all([
@@ -373,24 +369,18 @@ async function assertCanVerifyCollection(conn, payer, collectionMint) {
   if (!mdAcc || !edAcc) {
     throw new Error("Collection-PDAs nicht gefunden. Stimmt COLLECTION_MINT?");
   }
-
-  // 2) Lies UpdateAuthority der Collection aus der Metadata-Account-Data (leichtgewichtige Prüfung)
-  //    Wir checken nur „irgendwas ist da und du bist Signer“.
-  //    Die eigentliche Programmlogik erzwingt später sowieso die Authority.
   if (!payer) throw new Error("Kein Payer");
-  // Wenn du hier noch härter prüfen willst: komplette Metadata decodieren (separat),
-  // aber für den Flow reicht der on-chain Authority-Check in der Verify-Instruction.
 }
+
 /* ==================== MINT ==================== */
 async function doMint() {
   try {
     const btn = $("mintBtn");
     btn.disabled = true;
     const lblEl = btn.querySelector(".btn-label");
-    if (lblEl) { lblEl.dataset.orig = lblEl.textContent; lblEl.textContent = "Verarbeite..."; }
+    if (lblEl) { originalBtnText = lblEl.textContent; lblEl.textContent = "Verarbeite..."; }
     setSpin(true);
 
-    // 🔹 Lade Metaplex TM robust
     const TM = await loadTokenMetadata();
 
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
@@ -416,7 +406,7 @@ async function doMint() {
     const creatorPk = new PublicKey(CFG.CREATOR);
     const isSelf = payer.equals(creatorPk);
 
-    // ✅ Collection-Preflight (wir brechen ab, wenn was nicht passt)
+    // ✅ Collection-Preflight
     await assertCanVerifyCollection(connection, payer, collectionMint);
 
     const transaction = new Transaction();
@@ -438,28 +428,34 @@ async function doMint() {
     }
 
     // Rent für Mint Account
-    const lamports = await getMinimumBalanceForRentExemptMint(connection);
-    
-    // Mint Account anlegen + initialisieren
+    const rentLamports = await getMinimumBalanceForRentExemptMint(connection);
+
+    // Mint Account anlegen + initialisieren (Decimals=0)
     transaction.add(SystemProgram.createAccount({
-      fromPubkey: payer, newAccountPubkey: mint, space: MINT_SIZE, lamports, programId: TOKEN_PROGRAM_ID
+      fromPubkey: payer,
+      newAccountPubkey: mint,
+      space: MINT_SIZE,
+      lamports: rentLamports,
+      programId: TOKEN_PROGRAM_ID,
     }));
     transaction.add(createInitializeMint2Instruction(
       mint, 0, payer, payer
     ));
 
-    // Associated Token Account erstellen
+    // ATA berechnen & anlegen
+    const associatedTokenAccount = await getAssociatedTokenAddress(
+      mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+    );
     transaction.add(createAssociatedTokenAccountInstruction(
       payer, associatedTokenAccount, payer, mint
     ));
 
-    // 1 Token minten (klassischer NFT, Decimals=0)
+    // 1 Token minten (klassischer v1-NFT)
     transaction.add(createMintToInstruction(
       mint, associatedTokenAccount, payer, 1
     ));
 
-    // === PDAs ===
-        // === PDAs ===
+    // === PDAs für das neue NFT ===
     const metadataPda = findMetadataPda(mint);
     const masterEditionPda = findMasterEditionPda(mint);
 
@@ -511,7 +507,6 @@ async function doMint() {
       const canSized = typeof TM.createVerifySizedCollectionItemInstruction === "function";
       const collMdPda = findMetadataPda(collectionMint);
       const collEdPda = findMasterEditionPda(collectionMint);
-
       transaction.add(
         (canSized
           ? TM.createVerifySizedCollectionItemInstruction
@@ -526,59 +521,30 @@ async function doMint() {
       );
     }
 
-    // === Collection verifizieren (nur wenn du Authority bist) ===
-    if (isSelf) {
-      const collectionMetadataPda = findMetadataPda(collectionMint);
-      const collectionEditionPda  = findMasterEditionPda(collectionMint);
-
-      const canSized = typeof tm.createVerifySizedCollectionItemInstruction === "function";
-      transaction.add(
-        (canSized
-          ? tm.createVerifySizedCollectionItemInstruction
-          : tm.createSetAndVerifySizedCollectionItemInstruction)({
-            metadata: metadataPda,
-            collectionAuthority: payer,
-            payer,
-            collectionMint,
-            collection: collectionMetadataPda,
-            collectionMasterEditionAccount: collectionEditionPda,
-          })
-      );
-    }
-
     // Blockhash + Fee Payer
     const { blockhash } = await connection.getLatestBlockhash();
     transaction.recentBlockhash = blockhash;
     transaction.feePayer = payer;
 
-    // … nachdem du recentBlockhash/feePayer gesetzt hast:
-    transaction.partialSign(mintKeypair);
-    const txForSim = await wallet.signTransaction(transaction);
-    const sim = await connection.simulateTransaction(txForSim);
+    // Signaturen + Simulation
+    transaction.partialSign(mintKeypair); // Mint-Account
+    setStatus("Bitte im Wallet signieren…", "info");
+    const signedForSim = await wallet.signTransaction(transaction);
+
+    const sim = await connection.simulateTransaction(signedForSim);
     if (sim?.value?.err) {
       console.warn("simulateTransaction error:", sim.value.err, sim.value.logs);
-      throw new Error("Simulation fehlgeschlagen (siehe Konsole/Logs). Prüfe Collection-Authority & PDAs.");
+      throw new Error("Simulation fehlgeschlagen. Prüfe Collection-Authority/PDAs/URI.");
     }
 
-    // Wenn OK → normal signieren/senden:
-    const signed = txForSim; // bereits signiert
-    const signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
-    await connection.confirmTransaction(signature, "confirmed");
-    
-    // 🔏 Signaturen
-    transaction.partialSign(mintKeypair);                 // 1) Mint Account
-    setStatus("Bitte im Wallet signieren…", "info");
-    const signed = await wallet.signTransaction(transaction); // 2) Wallet
-
     // Senden + bestätigen
-    const signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+    const signature = await connection.sendRawTransaction(signedForSim.serialize(), { skipPreflight: false });
     await connection.confirmTransaction(signature, "confirmed");
 
     log("sent", { signature });
     const link = `https://solscan.io/tx/${signature}`;
     setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
 
-    // Claims
     await markClaimed(id);
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
@@ -587,9 +553,11 @@ async function doMint() {
   } finally {
     setSpin(false);
     const btn = $("mintBtn");
-    const lblEl = btn?.querySelector(".btn-label");
-    if (btn) btn.disabled = false;
-    if (lblEl && lblEl.dataset.orig) lblEl.textContent = lblEl.dataset.orig;
+    if (btn) {
+      btn.disabled = false;
+      const lbl = btn.querySelector(".btn-label");
+      if (lbl && originalBtnText) lbl.textContent = originalBtnText;
+    }
   }
 }
 
