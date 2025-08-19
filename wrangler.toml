@@ -1,4 +1,28 @@
-name = "solana-proxy"
-main = "src/worker.js"
-account_id = "ee57d3036a25f352ab089a94066a03c1"  # deine ID
-compatibility_date = "2025-08-18"
+name = "inpinity-rpc-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-08-19"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Upstreams (403 von mainnet? -> wir failovern automatisch auf BACKUP_RPC)
+UPSTREAM_RPC = "https://api.mainnet-beta.solana.com"
+BACKUP_RPC   = "https://solana.publicnode.com"
+
+# CORS: alle Origins, die deine Seite verwenden kann
+ALLOWED_ORIGINS = "https://mint.inpinity.online,https://inpinity.online,https://inpinity-mint.pages.dev,https://*.pages.dev"
+ALLOWED_HEADERS = "content-type,solana-client,accept,accept-language"
+
+# Optional externer JSON-Feed; leer = nur KV
+REMOTE_CLAIMS_URL = ""
+
+# Optional: für /relay(requireCreator)
+CREATOR_PUBKEY = "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp"
+
+[[kv_namespaces]]
+binding = "CLAIMS"
+id = "139ec0627b02429db4507c14b5a3a1fd"
+
+# **Nur** API-Route – NICHT die Mint-Seite!
+routes = [
+  { pattern = "api.inpinity.online/*", zone_name = "inpinity.online" }
+]
