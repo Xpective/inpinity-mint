@@ -196,6 +196,7 @@ async function fetchClaims() {
       if (!j) continue;
       if (Array.isArray(j)) return j;
       if (Array.isArray(j.claimed)) return j.claimed;
+      if (Array.isArray(j.claimed?.claimed)) return j.claimed.claimed; // defensive
     } catch {}
   }
   return [];
@@ -344,7 +345,7 @@ async function doMint() {
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
 
-    // Keine Selbst-Überweisung
+    // Keine Selbst-Überweisung (Self-mint)
     if (!isSelf) {
       builder = builder.add(transferSol(umi, {
         from: umi.identity, to: creatorPk,
@@ -392,7 +393,7 @@ async function doMint() {
       log("Collection verify appended (self-mint).");
     }
 
-    // Senden ohne Simulation
+    // Senden ohne Simulation/Preflight (um den Readonly-Balance-Fehler zu umgehen)
     setStatus("Bitte im Wallet signieren…", "info");
     const sig = await builder.sendAndConfirm(umi, {
       send: { commitment: 'confirmed', skipPreflight: true },
