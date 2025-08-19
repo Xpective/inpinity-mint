@@ -1,6 +1,11 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
 const BUILD_TAG = "mint-v16-phantom";
-
+// Falls UMD vorher via <script> geladen wurde:
+if (!window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
+  // dann später per loadTokenMetadata(); ansonsten:
+} else {
+  tm = window.mplTokenMetadata;
+}
 /* ==================== KONFIG ==================== */
 const CFG = {
   RPCS: [
@@ -58,18 +63,17 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== Metaplex TM Loader (sehr robust) ==================== */
 /* ==================== Metaplex TM Loader (robust: ESM → UMD) ==================== */
 let tm = null;
 async function loadTokenMetadata() {
   if (tm) return tm;
 
-  // 1) ESM-Kandidaten (bundled) – keine externen Abhängigkeiten
+  // 1) ESM (gebundelt) – keine externen Abhängigkeiten
   const esmCandidates = [
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
-    // lokale Vendor-Datei (wenn du sie bereitstellst – siehe Hinweis unten)
+    // Lokale Vendor-Datei (wenn vorhanden)
     `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs?nocache=${Date.now()}`,
   ];
 
@@ -82,7 +86,7 @@ async function loadTokenMetadata() {
 
   let lastErr = null;
 
-  // — ESM-Import versuchen
+  // --- ESM versuchen ---
   for (const url of esmCandidates) {
     try {
       const ok = url.startsWith(location.origin) ? true : await ping(url);
@@ -102,8 +106,7 @@ async function loadTokenMetadata() {
     }
   }
 
-  // — UMD-Fallback: lädt ein <script> und verwendet window.mplTokenMetadata
-  //   Vorteil: funktioniert, selbst wenn ESM/MIME klemmt.
+  // --- UMD Fallback (setzt window.mplTokenMetadata) ---
   const umdCandidates = [
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
@@ -118,7 +121,7 @@ async function loadTokenMetadata() {
         s.onerror = () => reject(new Error("UMD load failed"));
         document.head.appendChild(s);
       });
-      const m = (window).mplTokenMetadata;
+      const m = window.mplTokenMetadata;
       if (m &&
           typeof m.createCreateMetadataAccountV3Instruction === "function" &&
           typeof m.createCreateMasterEditionV3Instruction === "function") {
@@ -132,6 +135,13 @@ async function loadTokenMetadata() {
       console.warn("[TM] UMD import failed:", url, e);
     }
   }
+
+  console.error("[TM] all imports failed. Last error:", lastErr);
+  throw new Error(
+    "Metaplex Token Metadata konnte nicht geladen werden. " +
+    "Lade die UMD-Variante oder lege eine lokale Vendor-Datei ab."
+  );
+}
 
   console.error("[TM] all imports failed. Last error:", lastErr);
   throw new Error(
@@ -667,20 +677,17 @@ async function doMint() {
       )
     );
 
-// === Collection verify – sized ODER non-sized, je nachdem was die Collection ist
+// === Collection verify – sized ODER non-sized
 if (isSelf) {
   const collMdPda = findMetadataPda(collectionMint);
   const collEdPda = findMasterEditionPda(collectionMint);
 
-  // Wir probieren zuerst "Sized" (neuere Collections). Falls die Library die Non-Sized hat, verwenden wir diese.
-  // Beide Varianten sind in mpl-token-metadata v3 vorhanden – je nach Collection funktioniert die jeweilige Instruction.
   const hasSizedVerify = typeof tm.createVerifySizedCollectionItemInstruction === "function";
   const hasSetAndSized  = typeof tm.createSetAndVerifySizedCollectionItemInstruction === "function";
   const hasLegacyVerify = typeof tm.createVerifyCollectionInstruction === "function";
   const hasLegacySet    = typeof tm.createSetAndVerifyCollectionInstruction === "function";
 
   if (hasSizedVerify || hasSetAndSized) {
-    // SIZED (benötigt MasterEdition der Collection)
     const sizedIx = (hasSizedVerify
       ? tm.createVerifySizedCollectionItemInstruction
       : tm.createSetAndVerifySizedCollectionItemInstruction);
@@ -695,7 +702,6 @@ if (isSelf) {
       })
     );
   } else if (hasLegacyVerify || hasLegacySet) {
-    // NON-SIZED (alte v1-Collections)
     const legacyIx = (hasLegacyVerify
       ? tm.createVerifyCollectionInstruction
       : tm.createSetAndVerifyCollectionInstruction);
