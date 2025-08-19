@@ -32,15 +32,6 @@ import {
   Connection, PublicKey, Transaction, SystemProgram, Keypair
 } from "https://esm.sh/@solana/web3.js@1.95.3";
 
-import {
-  TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  MINT_SIZE,
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  createInitializeMintInstruction,
-  createMintToInstruction
-} from "https://esm.sh/@solana/spl-token@0.4.9";
 
 import {
   PROGRAM_ID as TOKEN_METADATA_PROGRAM_ID,
