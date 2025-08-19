@@ -1,15 +1,15 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v12";
+const BUILD_TAG = "mint-v13";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
-  // Worker zuerst (workers.dev), dann deine Domain-Route:
+  // Worker zuerst (neuer Worker), dann deine Domain-Route:
   RPCS: [
-    "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc",
+    "https://inpi-proxy-nft.s-plat.workers.dev/rpc",
     "https://api.inpinity.online/rpc",
   ],
   CLAIMS: [
-    "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
+    "https://inpi-proxy-nft.s-plat.workers.dev/claims",
     "https://api.inpinity.online/claims",
   ],
 
@@ -18,14 +18,14 @@ const CFG = {
   COLLECTION_MINT: "DmKi8MtrpfQXVQvNjUfxWgBC3xFL2Qn5mvLDMgMZrNmS",
 
   ROYALTY_BPS: 700,
-  TOKEN_STANDARD: 4,
+  TOKEN_STANDARD: 4, // Metaplex v3: 4 = Programmable NonFungible (kannst auf 0 setzen für klassisch)
   MAX_INDEX: 9999,
 
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
-  // Nimm dein stabilstes Gateway an Position 0
+  // Stabiles Gateway an Position 0
   GATEWAYS: [
     "https://ipfs.inpinity.online/ipfs",
     "https://ipfs.io/ipfs",
@@ -224,7 +224,10 @@ async function bootstrapClaims() {
 }
 async function isIdAvailable(id) {
   if (claimedSet.has(id)) return false;
-  const checks = CFG.GATEWAYS.map(gw => fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: 'HEAD', cache: 'no-store' }).then(r=>r.ok).catch(()=>false));
+  const checks = CFG.GATEWAYS.map(gw =>
+    fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: 'HEAD', cache: 'no-store' })
+      .then(r=>r.ok).catch(()=>false)
+  );
   return (await Promise.all(checks)).some(Boolean);
 }
 async function pickRandomFreeId() {
@@ -295,6 +298,7 @@ function renderPreview(id, meta) {
 
   const metaBox = $("metaBox");
   const dl = document.createElement("dl");
+  dl.className = "kv";
   const add = (k,v)=>{ const dt=document.createElement("dt");dt.textContent=k; const dd=document.createElement("dd");dd.textContent=v; dl.append(dt,dd); };
   add("Name", meta.name || `Pi Pyramid #${id}`);
   if (meta.description) add("Beschreibung", meta.description);
@@ -315,6 +319,9 @@ async function doMint() {
     const id = Number($("tokenId").value || 0);
     if (!Number.isInteger(id) || id < 0 || id > CFG.MAX_INDEX) throw new Error(`Ungültige ID (0–${CFG.MAX_INDEX})`);
 
+    // doppelt verhindern (client-seitig + serverseitig via KV)
+    if (claimedSet.has(id)) throw new Error(`#${id} bereits gemintet`);
+
     const donation = getSelectedDonation();
     const donationLamports = Math.round(donation * 1e9);
 
@@ -332,6 +339,9 @@ async function doMint() {
       mint: mint.publicKey, owner: umi.identity.publicKey
     });
 
+    // Ist der verbundene Wallet der Creator?
+    const isCreator = (phantom.publicKey?.toString?.() || "") === CFG.CREATOR;
+
     let builder = transactionBuilder()
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
       .add(setComputeUnitPrice(umi, { microLamports: 5_000 }))
@@ -347,11 +357,12 @@ async function doMint() {
       }));
     }
 
+    // create + mint
     builder = builder.add(createV1(umi, {
       mint, name: nftName, uri: nftUri,
       sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-      creators: some([{ address: umiPk(CFG.CREATOR), verified: false, share: 100 }]),
-      collection: some({ key: collectionMint, verified: false }),
+      creators: some([{ address: umiPk(CFG.CREATOR), verified: isCreator, share: 100 }]),
+      collection: some({ key: collectionMint, verified: isCreator }),
       tokenStandard: CFG.TOKEN_STANDARD,
       isMutable: true,
     }));
@@ -400,6 +411,7 @@ function handleError(context, e) {
   let user = msg;
   if (/user rejected|reject|denied|Abgelehnt/i.test(msg)) user = "Signierung abgebrochen";
   else if (/insufficient funds|insufficient/i.test(msg)) user = "Unzureichendes SOL-Guthaben";
+  else if (/already.*(use|minted)/i.test(msg)) user = "Diese Nummer ist bereits vergeben";
   setStatus(`❌ ${user}`, "err");
   log(`${context} ${msg}`);
 }

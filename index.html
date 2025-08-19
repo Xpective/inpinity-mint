@@ -12,221 +12,70 @@
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
 
-  <style>
-    :root {
-      --bg: #0d0d0d;
-      --bg-card: #1a1a1a;
-      --text: #f0f0f0;
-      --muted: #888;
-      --primary: #0b6;
-      --primary-dark: #094;
-      --border: #333;
-      --radius: 10px;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-    header {
-      padding: 20px;
-      text-align: center;
-      border-bottom: 1px solid var(--border);
-    }
-    header h1 {
-      margin: 0 0 6px;
-      font-size: 2rem;
-      color: var(--primary);
-    }
-    .muted { color: var(--muted); }
-    .wrap {
-      padding: 20px;
-      max-width: 1200px;
-      margin: 0 auto;
-      display: grid;
-      gap: 20px;
-    }
-    .bar, .row {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .pill {
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 6px 14px;
-      cursor: pointer;
-      background: transparent;
-      transition: all 0.2s;
-    }
-    .pill:hover { background: #222; }
-    .pill.active {
-      background: var(--primary);
-      color: #fff;
-      border-color: var(--primary-dark);
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 420px 1fr;
-      gap: 20px;
-    }
-    @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
-    .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-    }
-    .card .body { padding: 16px; }
-    .media {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 260px;
-      background: #111;
-    }
-    .media img, .media video { max-width: 100%; max-height: 420px; }
-    dl {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 8px;
-      margin: 0;
-    }
-    dt { font-weight: 600; }
-    dd { margin: 0; }
-    button {
-      padding: 11px 16px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: #222;
-      color: var(--text);
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    button:hover:not([disabled]) { background: #333; }
-    button.primary {
-      background: var(--primary);
-      border-color: var(--primary-dark);
-      color: #fff;
-      font-weight: 600;
-    }
-    button.primary:hover:not([disabled]) { background: var(--primary-dark); }
-    button[disabled] { opacity: 0.6; cursor: not-allowed; }
-    .status { min-height: 1.4em; }
-    .status.ok { color: #0f0; }
-    .status.warn { color: #ffb400; }
-    .status.err { color: #f33; }
-    .spinner {
-      width: 16px; height: 16px;
-      border: 2px solid #444;
-      border-top-color: #fff;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .foot {
-      color: var(--muted);
-      font-size: 12px;
-      text-align: center;
-      margin-top: 20px;
-    }
-    .mono {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    }
-    .log {
-      white-space: pre-wrap;
-      background: #111;
-      color: #ccc;
-      padding: 10px;
-      border-radius: var(--radius);
-      max-height: 180px;
-      overflow: auto;
-      font-size: 12px;
-    }
-    input[type="number"], input[type="text"] {
-      padding: 9px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: #111;
-      color: var(--text);
-      width: 120px;
-    }
-    .btn-label { min-width: 7.5em; display:inline-block; text-align:center; }
-    .inline { display:inline-flex; gap:8px; align-items:center; }
-    .small { font-size: 12px; }
-    .link { color: var(--primary); text-decoration: none; }
-    .link:hover { text-decoration: underline; }
-  </style>
+  <link rel="stylesheet" href="./styles.css?v=13" />
 </head>
 <body>
-  <header>
-    <h1>Pi Pyramid — Public Mint</h1>
-    <p class="muted">10.000 Stück (#0–#9999) · 7% Royalties · Creator 100%</p>
+  <header class="site-header">
+    <div class="container">
+      <div class="brand">
+        <div class="logo">π</div>
+        <div class="titles">
+          <h1>Pi Pyramid — Public Mint</h1>
+          <p class="muted">10.000 Stück (#0–#9999) · 7% Royalties · Creator 100%</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="connectBtn" class="btn btn-primary">Mit Phantom verbinden</button>
+        <div class="wallet-stats">
+          <span>Wallet: <strong id="walletLabel">nicht verbunden</strong></span>
+          <span>Balance: <strong id="balanceLabel">—</strong></span>
+        </div>
+      </div>
+    </div>
   </header>
 
-  <div class="wrap">
+  <noscript>
+    <div class="noscript">Bitte JavaScript aktivieren – sonst kann nicht gemintet werden.</div>
+  </noscript>
 
-    <!-- Wallet / Controls -->
-    <div class="bar">
-      <button id="connectBtn" class="primary">Mit Phantom verbinden</button>
-      <div>Wallet: <strong id="walletLabel">nicht verbunden</strong></div>
-      <div>Balance: <strong id="balanceLabel">—</strong></div>
-    </div>
-
-    <!-- ID Auswahl + Preview -->
+  <main class="container">
     <div class="grid">
+      <!-- Preview -->
       <div class="card">
         <div class="media" id="mediaBox"><span class="muted">Noch keine Vorschau…</span></div>
-        <div class="body">
+        <div class="card-body">
           <div class="row">
-            <label for="tokenId">Nummer (leer/0 = auto):</label>
-            <input id="tokenId" type="number" min="0" max="9999" placeholder="auto" />
-            <button id="randBtn">freie Nummer finden</button>
+            <label class="label" for="tokenId">Nummer (leer/0 = auto):</label>
+            <input id="tokenId" class="input" type="number" min="0" max="9999" placeholder="auto" />
+            <button id="randBtn" class="btn">freie Nummer finden</button>
             <span class="muted">frei: <span id="freeCounter">—</span></span>
           </div>
-          <div class="small mono">URI: <span id="previewUri">—</span> · <span id="uriStatus" class="muted">—</span></div>
-          <div id="metaBox" style="margin-top:10px"></div>
+          <div class="small mono uri-line">URI: <span id="previewUri">—</span> · <span id="uriStatus" class="muted">—</span></div>
+          <div id="metaBox" class="meta-box"></div>
         </div>
       </div>
 
+      <!-- Mint -->
       <div class="card">
-        <div class="body">
-          <h3>Mint</h3>
+        <div class="card-body">
+          <div class="h3">Mint</div>
           <p class="small">Fixe Creator-Fee: <strong>0.02 SOL</strong>. Optional kannst du zusätzlich spenden.</p>
 
-          <!-- Donation-Auswahl -->
-          <div id="donationOptions" class="bar">
+          <div id="donationOptions" class="donation-bar">
             <label class="pill active">
-              <input type="radio" name="donation" value="0" checked hidden />
-              0 SOL
+              <input type="radio" name="donation" value="0" checked hidden /> 0 SOL
             </label>
-            <label class="pill">
-              <input type="radio" name="donation" value="0.01" hidden />
-              0.01 SOL
-            </label>
-            <label class="pill">
-              <input type="radio" name="donation" value="0.10" hidden />
-              0.10 SOL
-            </label>
-            <label class="pill">
-              <input type="radio" name="donation" value="1" hidden />
-              1 SOL
-            </label>
-            <label class="pill">
-              <input type="radio" name="donation" value="custom" hidden />
-              Custom
-            </label>
+            <label class="pill"><input type="radio" name="donation" value="0.01" hidden /> 0.01 SOL</label>
+            <label class="pill"><input type="radio" name="donation" value="0.10" hidden /> 0.10 SOL</label>
+            <label class="pill"><input type="radio" name="donation" value="1" hidden /> 1 SOL</label>
+            <label class="pill"><input type="radio" name="donation" value="custom" hidden /> Custom</label>
             <span id="customDonationContainer" class="inline" style="display:none">
-              <input id="customDonationInput" type="number" step="0.001" min="0" placeholder="z. B. 0.25" />
+              <input id="customDonationInput" class="input" type="number" step="0.001" min="0" placeholder="z. B. 0.25" />
             </span>
           </div>
 
-          <div class="row">
-            <button id="mintBtn" class="primary" disabled>
+          <div class="row" style="margin-top:8px">
+            <button id="mintBtn" class="btn btn-primary" disabled>
               <span class="btn-label">Jetzt minten</span>
               <span class="spinner" hidden></span>
             </button>
@@ -234,17 +83,36 @@
           </div>
 
           <div id="status" class="status muted" style="margin-top:8px">—</div>
-          <div id="log" class="log small" style="margin-top:8px"></div>
+          <div id="log" class="log tiny" style="margin-top:8px"></div>
         </div>
       </div>
     </div>
 
-    <div class="foot">
-      CID (JSON): <code class="mono">bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu</code>
-      &nbsp;·&nbsp; Dev-Collection CID: <code class="mono">bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a</code>
-    </div>
-  </div>
+    <section class="info">
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="h4">Transparenz</div>
+          <p class="small">Free mint + optional Donation. Nur 0.02 SOL Creator-Fee; Royalties 7%.</p>
+        </div>
+        <div class="info-card">
+          <div class="h4">Sammlung</div>
+          <p class="small">10.000 NFTs (#0–#9999). Jede Nummer wird beim Mint gesperrt (no double-mint).</p>
+        </div>
+        <div class="info-card">
+          <div class="h4">On-Chain</div>
+          <p class="small">Umi + Token Metadata v3. Compute-Budget & Retry via Worker.</p>
+        </div>
+      </div>
+    </section>
 
-  <script type="module" src="./app.js?v=9"></script>
+    <footer class="site-footer">
+      <div class="container foot small">
+        CID (JSON): <code class="mono">bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu</code>
+        &nbsp;·&nbsp; Dev-Collection CID: <code class="mono">bafybeibagf7kmquenxfwsvfugc2ixn7kc5zve5xh7meiflgb6i6cg56m3a</code>
+      </div>
+    </footer>
+  </main>
+
+  <script type="module" src="./app.js?v=13"></script>
 </body>
 </html>
