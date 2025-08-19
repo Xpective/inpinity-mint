@@ -15,7 +15,7 @@ const CFG = {
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   MINT_FEE_SOL: 0.02,
 
-  // >>> HIER DEINE COLLECTION-MINT (Collection NFT) EINTRAGEN <<<
+  // Collection-Mint der bereits geminteten Collection
   COLLECTION_MINT: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
 
   ROYALTY_BPS: 700,
@@ -49,10 +49,10 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-// 👉 Ganzes Namespace importieren, um Export-Namen-Probleme zu vermeiden
+// Namespace-Import der Token-Metadata-Instruction-Fabrikfunktionen
 import * as mpl from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0";
 
-// Browser-seed-Helper (statt Buffer.from(...))
+/* ==================== SEEDS (Browser-kompatibel, kein Buffer) ==================== */
 const te = new TextEncoder();
 const METADATA_SEED = te.encode("metadata");
 const EDITION_SEED  = te.encode("edition");
@@ -97,10 +97,6 @@ const toHttp = (u) => {
 };
 const uriForId  = (id) => `ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const httpForId = (id, gw=0) => `${CFG.GATEWAYS[gw]}/${CFG.JSON_BASE_CID}/${id}.json`;
-const eqPk = (a, b) => {
-  try { return (typeof a === 'string' ? a : a?.toString?.()) === (typeof b === 'string' ? b : b?.toString?.()); }
-  catch { return false; }
-};
 
 /* ==================== STATE ==================== */
 let connection = null;
@@ -310,34 +306,21 @@ function renderPreview(id, meta) {
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
 
-/* ==================== TOKEN METADATA: PDAs + PROGRAM ID ==================== */
-const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
-  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
-);
-
+/* ==================== TOKEN METADATA: PROGRAM ID + PDAs ==================== */
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
   "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 );
 
 function findMetadataPda(mint) {
   return PublicKey.findProgramAddressSync(
-    [
-      METADATA_SEED,
-      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mint.toBuffer(),
-    ],
+    [METADATA_SEED, TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 }
 
 function findMasterEditionPda(mint) {
   return PublicKey.findProgramAddressSync(
-    [
-      METADATA_SEED,
-      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mint.toBuffer(),
-      EDITION_SEED,
-    ],
+    [METADATA_SEED, TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), EDITION_SEED],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 }
@@ -366,7 +349,6 @@ async function doMint() {
     const conn = await ensureConnection();
     const payer = phantom.publicKey;
 
-    // feste Werte/Keys
     const mintKeypair = Keypair.generate();
     const mint = mintKeypair.publicKey;
     const nftName = `Pi Pyramid #${id}`;
@@ -379,7 +361,7 @@ async function doMint() {
     const ata = await getAssociatedTokenAddress(mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
     const ataInfo = await conn.getAccountInfo(ata);
 
-    // Instruktionsliste
+    // Instruktionen
     const ixs = [];
     ixs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }));
     ixs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5_000 }));
@@ -454,8 +436,7 @@ async function doMint() {
       { createMasterEditionArgs: { maxSupply: 0 } }
     ));
 
-    // Optional: Collection direkt verifizieren, wenn der aktuelle Wallet die Collection-Authority ist
-    // (Bei dir ist Update-Authority = CREATOR, also klappt das, wenn du mit CREATOR-Wallet mintest)
+    // Collection sofort setzen + verifizieren (wenn payer = Collection-Authority)
     const collectionMetadataPda = findMetadataPda(collectionMint);
     const collectionMasterEditionPda = findMasterEditionPda(collectionMint);
     ixs.push(mpl.createSetAndVerifySizedCollectionItemInstruction({
@@ -468,7 +449,6 @@ async function doMint() {
       collectionMasterEdition: collectionMasterEditionPda,
     }));
 
-    // Safety
     log("Baue Tx: Instruktionsanzahl", { count: ixs.length });
     if (!ixs.length) throw new Error("No instructions (Tx leer)");
 
