@@ -68,10 +68,7 @@ async function loadTokenMetadata() {
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/esm/index.js",
     "https://cdn.skypack.dev/@metaplex-foundation/mpl-token-metadata@3.4.0?min",
-    // eigener Proxy (falls eingerichtet):
-    // "https://api.inpinity.online/vendor/mpl-token-metadata-3.4.0.mjs",
-    // lokale Vendor-Datei (empfohlen):
-    `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs`,
+    `${location.origin}/vendor/mpl-token-metadata-3.4.0.mjs",
   ];
 
   async function ping(url) {
@@ -86,10 +83,8 @@ async function loadTokenMetadata() {
     try {
       const ok = url.startsWith(location.origin) ? true : await ping(url);
       if (!ok) { lastErr = new Error(`HEAD failed for ${url}`); continue; }
-
       const mod = await import(/* @vite-ignore */ url);
       const m = mod?.default ?? mod;
-
       if (typeof m.createCreateMetadataAccountV3Instruction === "function" &&
           typeof m.createCreateMasterEditionV3Instruction === "function") {
         tm = m;
@@ -150,7 +145,7 @@ const setStatus = (t, cls = "") => { const el = $("status"); if (!el) return; el
 const log = (msg, obj) => {
   const el = $("log"); if (!el) return;
   const time = new Date().toLocaleTimeString();
-  el.textContent += `[${time}] ${msg}${obj ? " " + JSON.stringify(obj,null,2) : ""}\n`;
+  el.textContent += `[${time}] ${msg}${obj ? " " + (typeof obj === "string" ? obj : JSON.stringify(obj,null,2)) : ""}\n`;
   el.scrollTop = el.scrollHeight;
 };
 const setSpin = (on) => {
@@ -174,6 +169,8 @@ let phantom = null;
 let originalBtnText = "";
 let claimedSet = new Set();
 let availableIds = [];
+let inFlight = false;            // (1) Reentrancy-Guard
+let previewReady = false;        // UX: Mint erst möglich, wenn Preview geladen
 
 /* ==================== RPC via Worker ==================== */
 async function pickRpcEndpoint() {
@@ -194,6 +191,7 @@ async function ensureConnection() {
   const chosen = await pickRpcEndpoint();
   connection = new Connection(chosen, "confirmed");
   log("RPC ready", { rpc: chosen, build: BUILD_TAG });
+  showEnv();
   return connection;
 }
 
@@ -201,11 +199,14 @@ async function ensureConnection() {
 function getSelectedDonation() {
   const sel = document.querySelector('#donationOptions input[name="donation"]:checked');
   if (!sel) return 0;
+  let v = 0;
   if (sel.value === 'custom') {
-    const v = parseFloat($("customDonationInput").value);
-    return isNaN(v) ? 0 : v;
+    v = parseFloat($("customDonationInput").value);
+  } else {
+    v = parseFloat(sel.value);
   }
-  return parseFloat(sel.value);
+  v = isNaN(v) ? 0 : v;
+  return Math.max(0, v); // (8) Soft-Validation
 }
 function updateEstimatedCost() {
   const total = CFG.MINT_FEE_SOL + getSelectedDonation();
@@ -226,7 +227,7 @@ async function connectPhantom() {
     const pk58 = resp.publicKey.toString();
     $("walletLabel").textContent = `${pk58.slice(0,4)}…${pk58.slice(-4)}`;
     $("connectBtn").textContent  = "Phantom verbunden";
-    $("mintBtn").disabled = false;
+    applyMintButtonState();
     setStatus(`Wallet verbunden (${BUILD_TAG}). Bereit zum Minten.`, "ok");
     log("Wallet connected", { address: pk58 });
 
@@ -314,30 +315,53 @@ async function setRandomFreeId() {
   inp.value = String(id);
   await updatePreview();
 }
+async function safeMarkClaimed(i) { // (6) Race-Safety
+  const ok = await isIdAvailable(i);
+  if (!ok) throw new Error("ID wurde soeben belegt. Bitte neu würfeln.");
+  await markClaimed(i);
+}
+
+/* ==================== IPFS: Timeout & Happy-Eyeballs (7) ==================== */
+const fetchWithTimeout = (u, ms=6000) => Promise.race([
+  fetch(u, { cache:"no-store" }),
+  new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")), ms))
+]);
+async function fetchFirst(metaUrls) {
+  return new Promise((resolve, reject) => {
+    let done = false, errors = 0;
+    metaUrls.forEach(u => {
+      fetchWithTimeout(u).then(r => {
+        if (done) return;
+        if (r.ok) { done = true; r.json().then(resolve).catch(()=>{ /* fallthrough */ }); }
+        else if (++errors === metaUrls.length) reject(new Error("all failed"));
+      }).catch(() => { if (!done && ++errors === metaUrls.length) reject(new Error("all failed")); });
+    });
+  });
+}
 
 /* ==================== PREVIEW ==================== */
 const previewCache = {};
 async function updatePreview() {
-  const id = Number($("tokenId").value || 0);
+  const clampId = (v)=>{ v = Number(v)||0; return Math.max(0, Math.min(CFG.MAX_INDEX, v)); }; // (8)
+  const id = clampId($("tokenId").value || 0);
+  $("tokenId").value = String(id);
+
   $("previewUri").textContent = uriForId(id);
   $("uriStatus").textContent  = "prüfe URI …";
+  previewReady = false;
+  applyMintButtonState();
 
   const media = $("mediaBox");
   const metaBox = $("metaBox");
   media.innerHTML = '<span class="muted">Lade Vorschau…</span>';
   metaBox.innerHTML = "";
 
-  if (previewCache[id]) { renderPreview(id, previewCache[id]); return; }
+  if (previewCache[id]) { renderPreview(id, previewCache[id]); previewReady = true; applyMintButtonState(); return; }
 
   let meta = null;
-  for (let i = 0; i < CFG.GATEWAYS.length; i++) {
-    try {
-      const res = await fetch(httpForId(id, i), { cache: "no-store" });
-      if (!res.ok) continue;
-      meta = await res.json();
-      break;
-    } catch {}
-  }
+  try {
+    meta = await fetchFirst(CFG.GATEWAYS.map(g => `${g}/${CFG.JSON_BASE_CID}/${id}.json`));
+  } catch {}
 
   if (meta && !meta.image && CFG.PNG_BASE_CID)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url && CFG.MP4_BASE_CID) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
@@ -345,11 +369,15 @@ async function updatePreview() {
   if (!meta) {
     $("uriStatus").textContent = "⚠️ Metadaten nicht gefunden";
     media.textContent = "—";
+    previewReady = false;
+    applyMintButtonState();
     return;
   }
 
   previewCache[id] = meta;
   renderPreview(id, meta);
+  previewReady = true;
+  applyMintButtonState();
 }
 function renderPreview(id, meta) {
   $("uriStatus").textContent = "✅ Metadaten geladen";
@@ -391,9 +419,67 @@ async function assertCanVerifyCollection(conn, payer, collectionMint) {
   if (!mdAcc || !edAcc) throw new Error("Collection-PDAs nicht gefunden. Stimmt COLLECTION_MINT?");
   if (!payer) throw new Error("Kein Payer");
 }
+async function softAssertCollection(conn, mint) { // (12)
+  try { await assertCanVerifyCollection(conn, phantom?.publicKey, mint); }
+  catch (e) { log("Warnung: Collection-Preflight skipped", e?.message||String(e)); }
+}
+
+/* ==================== Priority Fee (4) ==================== */
+async function setSmartPriority(tx, conn) {
+  try {
+    // Neuere RPCs: getRecentPrioritizationFees (optional)
+    const res = await conn.getRecentPrioritizationFees?.({ percentiles:[50,75,90] });
+    const fallback = 1000;
+    const fee = (Array.isArray(res) && res.length)
+      ? (res[0]?.prioritizationFee ?? fallback)
+      : (res?.prioritizationFee ?? fallback);
+    const microLamports = Math.max(500, Math.min(5_000, Math.round((fee) * 1.1)));
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 220_000 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
+  } catch {
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1500 }));
+  }
+}
+
+/* ==================== Sign & Send mit Retry (3) ==================== */
+async function signSendWithRetry(conn, tx, wallet, extraSigner) {
+  if (extraSigner) tx.partialSign(extraSigner);
+  for (let attempt=0; attempt<3; attempt++) {
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = wallet.publicKey;
+    const signed = await wallet.signTransaction(tx);
+
+    // Simulation (9: Logs anzeigen)
+    const sim = await conn.simulateTransaction(signed, { sigVerify:false, commitment:"processed" });
+    if (sim?.value?.logs) log("simulate logs", sim.value.logs);
+    if (sim?.value?.err) {
+      console.warn("simulateTransaction error:", sim.value.err, sim.value.logs);
+      throw new Error("Simulation fehlgeschlagen. Prüfe Collection-Authority/PDAs/URI.");
+    }
+
+    try {
+      const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight:false });
+      await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+      return sig;
+    } catch (e) {
+      const msg = e?.message || "";
+      if (/BlockhashNotFound|expired/i.test(msg)) {
+        log("Blockhash abgelaufen – retry", { attempt: attempt+1 });
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("Blockhash wiederholt abgelaufen. Bitte erneut versuchen.");
+}
 
 /* ==================== MINT ==================== */
 async function doMint() {
+  if (inFlight) return; // (1) Reentrancy-Guard
+  inFlight = true;
+
   try {
     const btn = $("mintBtn");
     btn.disabled = true;
@@ -404,8 +490,10 @@ async function doMint() {
     const TM = await loadTokenMetadata();
 
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
-    const id = Number($("tokenId").value || 0);
+    const idRaw = Number($("tokenId").value || 0);
+    const id = Math.max(0, Math.min(CFG.MAX_INDEX, Number.isFinite(idRaw) ? Math.floor(idRaw) : 0));
     if (!Number.isInteger(id) || id < 0 || id > CFG.MAX_INDEX) throw new Error(`Ungültige ID (0–${CFG.MAX_INDEX})`);
+    if (!previewReady) throw new Error("Metadaten nicht geladen. Bitte kurz warten oder ID prüfen.");
 
     const donation = getSelectedDonation();
     const donationLamports = Math.round(donation * 1e9);
@@ -426,25 +514,25 @@ async function doMint() {
     const creatorPk = new PublicKey(CFG.CREATOR);
     const isSelf = payer.equals(creatorPk);
 
-    // ✅ Collection-Preflight
-    await assertCanVerifyCollection(connection, payer, collectionMint);
+    // ✅ Collection-Preflight (weich)
+    await softAssertCollection(connection, collectionMint);
 
     const transaction = new Transaction();
 
-    // Compute Budget (moderat)
-    transaction.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
-    transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_500 }));
+    // Compute Budget (smart)
+    await setSmartPriority(transaction, connection);
 
-    // Creator-Fee + optionale Spende
-    if (!isSelf) {
+    // Creator-Fee + optionale Spende (13)
+    const feeLamports = isSelf ? 0 : Math.round(CFG.MINT_FEE_SOL * 1e9);
+    if (feeLamports > 0) {
       transaction.add(SystemProgram.transfer({
-        fromPubkey: payer, toPubkey: creatorPk, lamports: Math.round(CFG.MINT_FEE_SOL * 1e9)
+        fromPubkey: payer, toPubkey: creatorPk, lamports: feeLamports
       }));
-      if (donationLamports > 0) {
-        transaction.add(SystemProgram.transfer({
-          fromPubkey: payer, toPubkey: creatorPk, lamports: donationLamports
-        }));
-      }
+    }
+    if (donationLamports >= 1_000) {
+      transaction.add(SystemProgram.transfer({
+        fromPubkey: payer, toPubkey: creatorPk, lamports: donationLamports
+      }));
     }
 
     // Rent für Mint Account
@@ -462,13 +550,16 @@ async function doMint() {
       mint, 0, payer, payer
     ));
 
-    // ATA berechnen & anlegen
-    const associatedTokenAccount = await getAssociatedTokenAddress(
+    // ATA berechnen & anlegen (5)
+    let associatedTokenAccount = await getAssociatedTokenAddress(
       mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-    ));
-    transaction.add(createAssociatedTokenAccountInstruction(
-      payer, associatedTokenAccount, payer, mint
-    ));
+    );
+    const ataInfo = await connection.getAccountInfo(associatedTokenAccount);
+    if (!ataInfo) {
+      transaction.add(createAssociatedTokenAccountInstruction(
+        payer, associatedTokenAccount, payer, mint
+      ));
+    }
 
     // 1 Token minten (klassischer v1-NFT)
     transaction.add(createMintToInstruction(
@@ -541,32 +632,26 @@ async function doMint() {
       );
     }
 
-    // Blockhash + Fee Payer
-    const { blockhash } = await connection.getLatestBlockhash();
-    transaction.recentBlockhash = blockhash;
-    transaction.feePayer = payer;
-
-    // Signaturen + Simulation
-    transaction.partialSign(mintKeypair); // Mint-Account
     setStatus("Bitte im Wallet signieren…", "info");
-    const signedForSim = await wallet.signTransaction(transaction);
-
-    const sim = await connection.simulateTransaction(signedForSim);
-    if (sim?.value?.err) {
-      console.warn("simulateTransaction error:", sim.value.err, sim.value.logs);
-      throw new Error("Simulation fehlgeschlagen. Prüfe Collection-Authority/PDAs/URI.");
-    }
-
-    // Senden + bestätigen
-    const signature = await connection.sendRawTransaction(signedForSim.serialize(), { skipPreflight: false });
-    await connection.confirmTransaction(signature, "confirmed");
+    const signature = await signSendWithRetry(connection, transaction, wallet, mintKeypair);
 
     log("sent", { signature });
     const link = `https://solscan.io/tx/${signature}`;
-    setStatus(`✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>`, "ok");
+    setStatus(
+      `✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>
+       <button id="copyTx" class="btn-mini">Copy Tx</button>`,
+      "ok"
+    );
+    // Copy-Button
+    setTimeout(()=>{
+      const c = $("copyTx");
+      if (c) c.onclick = ()=>navigator.clipboard.writeText(signature);
+    },0);
 
-    await markClaimed(id);
-    claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
+    await safeMarkClaimed(id);
+    claimedSet.add(id); recomputeAvailable();
+    await setRandomFreeId();
+    await updateBalance(); // UX: Balance refresh
 
   } catch (e) {
     handleError("Mint fehlgeschlagen:", e);
@@ -578,18 +663,38 @@ async function doMint() {
       const lbl = btn.querySelector(".btn-label");
       if (lbl && originalBtnText) lbl.textContent = originalBtnText;
     }
+    inFlight = false;
   }
 }
 
-/* ==================== ERROR HANDLING ==================== */
+/* ==================== ERROR HANDLING (10) ==================== */
+function userFriendly(msg){
+  if (/user rejected|reject|denied|Abgelehnt/i.test(msg)) return "Signierung abgebrochen";
+  if (/insufficient funds|insufficient|0x7d0/i.test(msg)) return "Unzureichendes SOL-Guthaben.";
+  if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
+  if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
+  if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
+  if (/Simulation fehlgeschlagen/i.test(msg)) return "Simulation fehlgeschlagen. Prüfe URI/Collection/PDAs.";
+  return msg;
+}
 function handleError(context, e) {
   console.error(context, e);
   let msg = e?.message || String(e);
-  let user = msg;
-  if (/user rejected|reject|denied|Abgelehnt/i.test(msg)) user = "Signierung abgebrochen";
-  else if (/insufficient funds|insufficient/i.test(msg)) user = "Unzureichendes SOL-Guthaben";
+  let user = userFriendly(msg);
   setStatus(`❌ ${user}`, "err");
   log(`${context} ${msg}`);
+}
+
+/* ==================== ENV/UX Helpers (14/15) ==================== */
+function showEnv() {
+  const el = $("envInfo");
+  if (el && connection) el.textContent = `Build ${BUILD_TAG} · RPC ${connection.rpcEndpoint}`;
+}
+function applyMintButtonState(){
+  const btn = $("mintBtn");
+  if (!btn) return;
+  const ok = !!phantom?.publicKey && previewReady;
+  btn.disabled = !ok;
 }
 
 /* ==================== UI WIRING ==================== */
@@ -597,7 +702,9 @@ function wireUI() {
   $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
   $("randBtn")?.addEventListener("click", setRandomFreeId);
-  $("tokenId")?.addEventListener("input", updatePreview);
+
+  const idInput = $("tokenId");
+  idInput?.addEventListener("input", updatePreview);
 
   // Donation-Pills
   const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
@@ -631,6 +738,13 @@ function wireUI() {
 
   applyDonationSelection();
   updateEstimatedCost();
+
+  // Mobile In-App Browser Hinweis (15)
+  try {
+    const ua = navigator.userAgent || "";
+    const bad = /Instagram|FBAN|FBAV|Line\/|TikTok/i.test(ua);
+    if (bad) setStatus("⚠️ Öffne diese Seite in einem externen Browser (Safari/Chrome) für Wallet-Popups.", "warn");
+  } catch {}
 }
 
 /* ==================== START ==================== */
@@ -641,4 +755,5 @@ document.addEventListener("DOMContentLoaded", async () => {
   const inp = $("tokenId");
   if (inp) { inp.value = "0"; }
   await setRandomFreeId();
+  applyMintButtonState();
 });
