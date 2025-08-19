@@ -45,11 +45,19 @@ import {
   getMinimumBalanceForRentExemptMint
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
+// ✅ KORREKTE IMPORTS (ohne ?bundle, mit Deep-Path)
 import {
   createCreateMetadataAccountV3Instruction,
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/src/generated/instructions/createMetadataAccountV3";
+
+import {
   createCreateMasterEditionV3Instruction,
-  createVerifySizedCollectionItemInstruction
-} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/src/generated/instructions/createMasterEditionV3";
+
+import {
+  createVerifySizedCollectionItemInstruction,
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/src/generated/instructions/verifySizedCollectionItem";
+
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
