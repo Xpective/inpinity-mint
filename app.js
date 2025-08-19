@@ -49,8 +49,8 @@ import {
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 // ✅ Einziger Import für Token-Metadata (Namespace)
-import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0";
-
+// Erzwingt stabile named exports aus esm.sh
+import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2022";
 /* ==================== SEEDS (Browser-sicher) ==================== */
 const te = new TextEncoder();
 
@@ -333,6 +333,11 @@ function renderPreview(id, meta) {
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
 
+if (typeof tm.createCreateMetadataAccountV3Instruction !== "function" ||
+    typeof tm.createCreateMasterEditionV3Instruction !== "function") {
+  throw new Error("Metaplex V3-Exports fehlen. Import-URL mit ?bundle verwenden oder hart neu laden (Strg/Cmd+Shift+R).");
+}
+
 /* ==================== MINT ==================== */
 async function doMint() {
   try {
@@ -423,110 +428,74 @@ async function doMint() {
     ));
 
     // === PDAs ===
-    const metadataPda = findMetadataPda(mint);
-    const masterEditionPda = findMasterEditionPda(mint);
+// === PDAs ===
+const metadataPda = findMetadataPda(mint);
+const masterEditionPda = findMasterEditionPda(mint);
 
-    // === Create Metadata (V3 bevorzugt, sonst Fallback) ===
-    const createMetadataIx =
-      (tm.createCreateMetadataAccountV3Instruction
-        ? tm.createCreateMetadataAccountV3Instruction(
-            {
-              metadata: metadataPda,
-              mint,
-              mintAuthority: payer,
-              payer,
-              updateAuthority: payer,
-            },
-            {
-              createMetadataAccountArgsV3: {
-                data: {
-                  name: nftName,
-                  symbol: "InPi",
-                  uri: nftUri,
-                  sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-                  creators: [{ address: creatorPk, verified: payer.equals(creatorPk), share: 100 }],
-                  collection: { key: collectionMint, verified: false },
-                  uses: null
-                },
-                isMutable: true,
-                collectionDetails: null
-              }
-            }
-          )
-        : tm.createCreateMetadataAccountInstruction(
-            {
-              metadata: metadataPda,
-              mint,
-              mintAuthority: payer,
-              payer,
-              updateAuthority: payer,
-            },
-            {
-              createMetadataAccountArgs: {
-                data: {
-                  name: nftName,
-                  symbol: "InPi",
-                  uri: nftUri,
-                  sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-                  creators: [{ address: creatorPk, verified: payer.equals(creatorPk), share: 100 }],
-                  collection: { key: collectionMint, verified: false },
-                  uses: null
-                },
-                isMutable: true
-              }
-            }
-          ));
-    transaction.add(createMetadataIx);
-
-    // === Master Edition (V3 bevorzugt, sonst Fallback) ===
-    const createMasterEditionIx =
-      (tm.createCreateMasterEditionV3Instruction
-        ? tm.createCreateMasterEditionV3Instruction(
-            {
-              edition: masterEditionPda,
-              mint,
-              updateAuthority: payer,
-              mintAuthority: payer,
-              payer,
-              metadata: metadataPda,
-            },
-            { createMasterEditionArgs: { maxSupply: 0 } }
-          )
-        : tm.createCreateMasterEditionInstruction(
-            {
-              edition: masterEditionPda,
-              mint,
-              updateAuthority: payer,
-              mintAuthority: payer,
-              payer,
-              metadata: metadataPda,
-            },
-            { createMasterEditionArgs: { maxSupply: 0 } }
-          ));
-    transaction.add(createMasterEditionIx);
-
-    // === Collection verifizieren (nur wenn du Authority bist) ===
-    if (isSelf) {
-      const verifyIx =
-        (tm.createVerifySizedCollectionItemInstruction
-          ? tm.createVerifySizedCollectionItemInstruction({
-              metadata: metadataPda,
-              collectionAuthority: payer,
-              payer,
-              collectionMint,
-              collection: findMetadataPda(collectionMint),
-              collectionMasterEditionAccount: findMasterEditionPda(collectionMint),
-            })
-          : tm.createSetAndVerifySizedCollectionItemInstruction({
-              metadata: metadataPda,
-              collectionAuthority: payer,
-              payer,
-              collectionMint,
-              collection: findMetadataPda(collectionMint),
-              collectionMasterEditionAccount: findMasterEditionPda(collectionMint),
-            }));
-      transaction.add(verifyIx);
+// === Create Metadata (V3) ===
+const createMetadataIx = tm.createCreateMetadataAccountV3Instruction(
+  {
+    metadata: metadataPda,
+    mint,
+    mintAuthority: payer,
+    payer,
+    updateAuthority: payer,
+  },
+  {
+    createMetadataAccountArgsV3: {
+      data: {
+        name: nftName,
+        symbol: "InPi",
+        uri: nftUri,
+        sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+        creators: [{ address: new PublicKey(CFG.CREATOR), verified: payer.equals(new PublicKey(CFG.CREATOR)), share: 100 }],
+        collection: { key: new PublicKey(CFG.COLLECTION_MINT), verified: false },
+        uses: null
+      },
+      isMutable: true,
+      collectionDetails: null
     }
+  }
+);
+transaction.add(createMetadataIx);
+
+// === Master Edition (V3) ===
+const createMasterEditionIx = tm.createCreateMasterEditionV3Instruction(
+  {
+    edition: masterEditionPda,
+    mint,
+    updateAuthority: payer,
+    mintAuthority: payer,
+    payer,
+    metadata: metadataPda,
+  },
+  { createMasterEditionArgs: { maxSupply: 0 } }
+);
+transaction.add(createMasterEditionIx);
+
+// === Collection verifizieren (Sized) – wenn du die Authority bist
+if (payer.equals(new PublicKey(CFG.CREATOR))) {
+  const verifyIx = (typeof tm.createVerifySizedCollectionItemInstruction === "function")
+    ? tm.createVerifySizedCollectionItemInstruction({
+        metadata: metadataPda,
+        collectionAuthority: payer,
+        payer,
+        collectionMint: new PublicKey(CFG.COLLECTION_MINT),
+        collection: findMetadataPda(new PublicKey(CFG.COLLECTION_MINT)),
+        collectionMasterEditionAccount: findMasterEditionPda(new PublicKey(CFG.COLLECTION_MINT)),
+      })
+    // Fallback: Set+Verify (selten nötig; nur verwenden, wenn obiger fehlt)
+    : tm.createSetAndVerifySizedCollectionItemInstruction({
+        metadata: metadataPda,
+        collectionAuthority: payer,
+        payer,
+        collectionMint: new PublicKey(CFG.COLLECTION_MINT),
+        collection: findMetadataPda(new PublicKey(CFG.COLLECTION_MINT)),
+        collectionMasterEditionAccount: findMasterEditionPda(new PublicKey(CFG.COLLECTION_MINT)),
+      });
+
+  transaction.add(verifyIx);
+}
 
     // Blockhash + Fee Payer
     const { blockhash } = await connection.getLatestBlockhash();
