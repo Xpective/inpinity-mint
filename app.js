@@ -1,16 +1,16 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v12";
+const BUILD_TAG = "mint-v14";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
-  // Worker zuerst (workers.dev), dann deine Domain-Route:
+  // Bevorzugt deine Domain-Route → dann workers.dev als Fallback:
   RPCS: [
-    "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc",
     "https://api.inpinity.online/rpc",
+    "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc",
   ],
   CLAIMS: [
-    "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
     "https://api.inpinity.online/claims",
+    "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
   ],
 
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
@@ -25,17 +25,17 @@ const CFG = {
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
-  // Nimm dein stabilstes Gateway an Position 0
+  // Stabilstes Gateway zuerst (Custom-IPFS weiter hinten bis DNS 100% steht)
   GATEWAYS: [
-    "https://ipfs.inpinity.online/ipfs",
     "https://ipfs.io/ipfs",
-    "https://cloudflare-ipfs.com/ipfs"
+    "https://cloudflare-ipfs.com/ipfs",
+    "https://ipfs.inpinity.online/ipfs"
   ],
 };
 
 /* ==================== IMPORTS ==================== */
 import {
-  createUmi, generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports
+  generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports
 } from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
 import { createUmi as createUmiDefaults } from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
@@ -55,7 +55,7 @@ import {
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
-  const TARGET  = CFG.RPCS[0]; // Worker
+  const TARGET  = CFG.RPCS[0]; // bevorzugter Worker
   const _fetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     try {
@@ -113,8 +113,10 @@ async function pickRpcEndpoint() {
       if (r.ok) return url;
     } catch {}
   }
-  return CFG.RPCS[0];
+  // Letzter Rettungsanker (sollte im Normalfall nicht erreicht werden):
+  return "https://api.mainnet-beta.solana.com";
 }
+
 async function ensureConnection() {
   if (rpcConn) return rpcConn;
   const chosen = await pickRpcEndpoint();
@@ -147,12 +149,10 @@ async function connectPhantom() {
     const resp = await w.connect(); // Popup
     phantom = w;
 
-    // Umi auf deinen Worker
+    // Umi direkt mit deinem Worker-Endpoint initialisieren (kein rpc.setEndpoint!)
     umi = createUmiDefaults(CFG.RPCS[0])
       .use(walletAdapterIdentity(phantom))
       .use(mplTokenMetadata());
-    // explizit sicherstellen:
-    umi.rpc.setEndpoint(CFG.RPCS[0]);
 
     // web3 Connection über Worker initialisieren
     await ensureConnection();
@@ -207,8 +207,13 @@ async function fetchClaims() {
 async function markClaimed(i) {
   for (const url of CFG.CLAIMS) {
     try {
-      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ index: i }) });
-      if (r.ok) return;
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ index: i })
+      });
+      if (r.status === 200) { log("claim stored", { index: i }); return; }
+      if (r.status === 409) { log("claim already existed", { index: i }); return; }
     } catch {}
   }
 }
@@ -224,7 +229,10 @@ async function bootstrapClaims() {
 }
 async function isIdAvailable(id) {
   if (claimedSet.has(id)) return false;
-  const checks = CFG.GATEWAYS.map(gw => fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: 'HEAD', cache: 'no-store' }).then(r=>r.ok).catch(()=>false));
+  const checks = CFG.GATEWAYS.map(gw =>
+    fetch(`${gw}/${CFG.JSON_BASE_CID}/${id}.json`, { method: 'HEAD', cache: 'no-store' })
+      .then(r=>r.ok).catch(()=>false)
+  );
   return (await Promise.all(checks)).some(Boolean);
 }
 async function pickRandomFreeId() {
