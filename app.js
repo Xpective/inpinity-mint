@@ -1,9 +1,8 @@
 /* ==================== BUILD-ID (Cache/Debug) ==================== */
-const BUILD_TAG = "mint-v14";
+const BUILD_TAG = "mint-v15";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
-  // Bevorzugt deine Domain-Route → dann workers.dev als Fallback:
   RPCS: [
     "https://api.inpinity.online/rpc",
     "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc",
@@ -25,7 +24,6 @@ const CFG = {
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
-  // Stabilstes Gateway zuerst (Custom-IPFS weiter hinten bis DNS 100% steht)
   GATEWAYS: [
     "https://ipfs.io/ipfs",
     "https://cloudflare-ipfs.com/ipfs",
@@ -38,19 +36,14 @@ import {
   generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports
 } from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
 import { createUmi as createUmiDefaults, signerPayer, signerIdentity } from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
-import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
-
+import { createSignerFromWalletAdapter } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 import {
-  mplTokenMetadata, createV1, mintV1
+  mplTokenMetadata, createV1, mintV1, verifyCollectionV1, findMetadataPda
 } from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle";
-
 import {
   setComputeUnitLimit, setComputeUnitPrice, transferSol, findAssociatedTokenPda
 } from "https://esm.sh/@metaplex-foundation/mpl-toolbox@0.10.0?bundle";
-
-import {
-  Connection, PublicKey
-} from "https://esm.sh/@solana/web3.js@1.95.3";
+import { Connection, PublicKey } from "https://esm.sh/@solana/web3.js@1.95.3";
 
 /* ==================== FETCH-REWRITE (Safety) ==================== */
 (function installFetchRewrite(){
@@ -100,7 +93,7 @@ const eqPk = (a, b) => {
 /* ==================== STATE ==================== */
 let umi = null;
 let phantom = null;
-let rpcConn = null; // web3.js Connection (nur für Balance/Confirm)
+let rpcConn = null;
 let originalBtnText = "";
 let claimedSet = new Set();
 let availableIds = [];
@@ -117,10 +110,8 @@ async function pickRpcEndpoint() {
       if (r.ok) return url;
     } catch {}
   }
-  // Letzter Rettungsanker (sollte im Normalfall nicht erreicht werden):
   return "https://api.mainnet-beta.solana.com";
 }
-
 async function ensureConnection() {
   if (rpcConn) return rpcConn;
   const chosen = await pickRpcEndpoint();
@@ -153,12 +144,13 @@ async function connectPhantom() {
     const resp = await w.connect(); // Popup
     phantom = w;
 
-    // Umi direkt mit deinem Worker-Endpoint initialisieren (kein rpc.setEndpoint!)
+    // Phantom als Identity **und** Payer
+    const waSigner = createSignerFromWalletAdapter(phantom);
     umi = createUmiDefaults(CFG.RPCS[0])
-      .use(walletAdapterIdentity(phantom))
+      .use(signerIdentity(waSigner))
+      .use(signerPayer(waSigner))
       .use(mplTokenMetadata());
 
-    // web3 Connection über Worker initialisieren
     await ensureConnection();
 
     const pk58 = resp.publicKey.toString();
@@ -184,7 +176,7 @@ async function connectPhantom() {
 async function updateBalance() {
   if (!phantom?.publicKey) return;
   try {
-    const conn = await ensureConnection();         // ← Worker-Connection!
+    const conn = await ensureConnection();
     const lam = await conn.getBalance(new PublicKey(phantom.publicKey.toString()));
     const sol = lam / 1e9;
     $("balanceLabel").textContent = `${sol.toFixed(4)} SOL`;
@@ -314,7 +306,7 @@ function renderPreview(id, meta) {
   metaBox.innerHTML = ""; metaBox.appendChild(dl);
 }
 
-/* ==================== MINT (über Umi end-to-end) ==================== */
+/* ==================== MINT ==================== */
 async function doMint() {
   try {
     const btn = $("mintBtn");
@@ -344,28 +336,39 @@ async function doMint() {
       mint: mint.publicKey, owner: umi.identity.publicKey
     });
 
+    const creatorPk = umiPk(CFG.CREATOR);
+    const payerPk58 = umi.identity.publicKey.toString();
+    const isSelf = eqPk(payerPk58, creatorPk.toString());
+
     let builder = transactionBuilder()
       .add(setComputeUnitLimit(umi, { units: 300_000 }))
-      .add(setComputeUnitPrice(umi, { microLamports: 5_000 }))
-      .add(transferSol(umi, {
-        from: umi.identity, to: umiPk(CFG.CREATOR),
+      .add(setComputeUnitPrice(umi, { microLamports: 5_000 }));
+
+    // Keine Selbst-Überweisung
+    if (!isSelf) {
+      builder = builder.add(transferSol(umi, {
+        from: umi.identity, to: creatorPk,
         amount: lamports(Math.round(CFG.MINT_FEE_SOL * 1e9))
       }));
-
-    if (donationLamports > 0) {
-      builder = builder.add(transferSol(umi, {
-        from: umi.identity, to: umiPk(CFG.CREATOR),
-        amount: lamports(donationLamports)
-      }));
+      if (donationLamports > 0) {
+        builder = builder.add(transferSol(umi, {
+          from: umi.identity, to: creatorPk,
+          amount: lamports(donationLamports)
+        }));
+      }
+    } else if (donationLamports > 0) {
+      log("Self-mint: Donation übersprungen (Sender=Empfänger).", { donationLamports });
     }
 
+    // createV1 / mintV1 mit payer = Phantom
     builder = builder.add(createV1(umi, {
       mint, name: nftName, uri: nftUri,
       sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-      creators: some([{ address: umiPk(CFG.CREATOR), verified: false, share: 100 }]),
+      creators: some([{ address: creatorPk, verified: false, share: 100 }]),
       collection: some({ key: collectionMint, verified: false }),
       tokenStandard: CFG.TOKEN_STANDARD,
       isMutable: true,
+      payer: umi.identity,
     }));
 
     builder = builder.add(mintV1(umi, {
@@ -375,12 +378,24 @@ async function doMint() {
       amount: 1,
       tokenOwner: umi.identity.publicKey,
       tokenStandard: CFG.TOKEN_STANDARD,
+      payer: umi.identity,
     }));
 
-    // ✨ Umi übernimmt Blockhash + Signieren + Senden + Confirm
+    // Auto-Verify Collection nur beim Creator-Self-Mint
+    if (isSelf) {
+      const metadataPda = findMetadataPda(umi, { mint: mint.publicKey });
+      builder = builder.add(verifyCollectionV1(umi, {
+        metadata: metadataPda,
+        collectionMint,
+        collectionAuthority: umi.identity,
+      }));
+      log("Collection verify appended (self-mint).");
+    }
+
+    // Senden ohne Simulation
     setStatus("Bitte im Wallet signieren…", "info");
     const sig = await builder.sendAndConfirm(umi, {
-      send: { commitment: 'confirmed' },
+      send: { commitment: 'confirmed', skipPreflight: true },
       confirm: { strategy: { type: 'blockhash' } }
     });
     const signature = typeof sig === 'string' ? sig : base58.encode(sig);
@@ -393,6 +408,8 @@ async function doMint() {
     claimedSet.add(id); recomputeAvailable(); await setRandomFreeId();
 
   } catch (e) {
+    const logs = e?.logs || e?.cause?.logs;
+    if (logs) log("RPC logs", logs);
     handleError("Mint fehlgeschlagen:", e);
   } finally {
     setSpin(false);
