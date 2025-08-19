@@ -60,26 +60,16 @@ import {
 
 /* ==================== Metaplex TM Loader (ESM → UMD) ==================== */
 let tm = null;
+// --- Metaplex TM Loader (minimal, UMD vom <script>) ---
+let tm = null;
 async function loadTokenMetadata() {
   if (tm?.createCreateMetadataAccountV3Instruction) return tm;
-
-  // per <script> vorab geladen?
   if (window.mplTokenMetadata?.createCreateMetadataAccountV3Instruction) {
     tm = window.mplTokenMetadata;
-    console.log("[TM] UMD preloaded");
     return tm;
   }
-
-  // Fallback: lade von deiner Origin
-  const url = "https://api.inpinity.online/vendor/mpl-token-metadata-umd.js?v=3.4.0";
-  await new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = url;
-    s.async = true;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("UMD load failed"));
-    document.head.appendChild(s);
-  });
+  throw new Error("Metaplex Token Metadata (UMD) nicht gefunden. Prüfe <script>-Tag in index.html.");
+}
 
   const m = window.mplTokenMetadata;
   if (!m?.createCreateMetadataAccountV3Instruction || !m?.createCreateMasterEditionV3Instruction) {
