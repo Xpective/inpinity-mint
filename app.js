@@ -16,10 +16,10 @@ const CFG = {
     "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
   ],
 
-  // >>> Deine Schlüssel & Collection <<<
+  // >>> Schlüssel & Collection <<<
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
-  MINT_FEE_SOL: 0.02,
   COLLECTION_MINT: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
+  MINT_FEE_SOL: 0.02,
 
   ROYALTY_BPS: 700,
   MAX_INDEX: 9999,
@@ -41,6 +41,13 @@ const CFG = {
     "https://inpi-proxy-nft.s-plat.workers.dev"
   ]
 };
+
+/* === Mini-Config-Check (verhindert falsche Adressen) === */
+(function assertConfig(){
+  const b58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  if (!b58.test(CFG.CREATOR)) throw new Error("CFG.CREATOR ist keine Base58-Adresse.");
+  if (!b58.test(CFG.COLLECTION_MINT)) throw new Error("CFG.COLLECTION_MINT ist keine Base58 Mint-Adresse.");
+})();
 
 /* ==================== SOLANA IMPORTS (ESM) ==================== */
 import {
@@ -64,7 +71,6 @@ let TM = null;
 let TM_PROGRAM_ID_V1 = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 
-// Kandidaten nacheinander laden
 async function loadScriptFromList(urls) {
   let lastErr;
   for (const u of urls) {
@@ -318,6 +324,7 @@ async function connectPhantom(){
       $("mintBtn").disabled=true;
       setStatus("Wallet getrennt. Bitte erneut verbinden.","warn");
     });
+    phantom.on?.("accountChanged", updateBalance);
   }catch(e){ handleError("Wallet-Verbindung fehlgeschlagen:", e); }
 }
 async function updateBalance(){
@@ -681,12 +688,12 @@ async function doMint(){
     // Mint Account + init + ATA + mint 1
     const mintKeypair=Keypair.generate(); const mint=mintKeypair.publicKey;
 
-    const rentLamports=await getMinimumBalanceForRentExemptMint(conn); // FIX: conn
+    const rentLamports=await getMinimumBalanceForRentExemptMint(conn); // conn, nicht global
     tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
     tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
 
     const ata=await getAssociatedTokenAddress(mint,payer,false,TOKEN_PROGRAM_ID,ASSOCIATED_TOKEN_PROGRAM_ID);
-    const ataInfo=await conn.getAccountInfo(ata); // FIX: conn
+    const ataInfo=await conn.getAccountInfo(ata);
     if (!ataInfo) tx.add(createAssociatedTokenAccountInstruction(payer,ata,payer,mint));
 
     tx.add(createMintToInstruction(mint,ata,payer,1));
@@ -831,7 +838,11 @@ function wireUI(){
 
 /* ==================== START ==================== */
 document.addEventListener("DOMContentLoaded", async ()=>{
-  log("System boot",{build:BUILD_TAG,rpcs:CFG.RPCS});
+  log("System boot",{build:BUILD_TAG,rpcs:CFG.RPCS, roles:{
+    creator: CFG.CREATOR,
+    collectionMint: CFG.COLLECTION_MINT,
+    tokenProgram: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  }});
   wireUI();
   await bootstrapClaims();
   const inp=$("tokenId"); if (inp) inp.value="0";
