@@ -97,40 +97,56 @@ async function loadScriptFromList(urls) {
 async function loadTM() {
   if (TM) return TM;
 
-  // 1) Eigener Worker (stabil, per VENDOR-KV gecached)
+  // 1) ESM (stabil)
+  try {
+    // gebündelt + kompatibel im Browser
+    const mod = await import(
+      "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020"
+    );
+    TM = mod;
+    TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
+    TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+    console.log("[vendor] mpl-token-metadata ready (esm.sh)", { programId: TOKEN_METADATA_PROGRAM_ID.toString() });
+    return TM;
+  } catch (e) {
+    console.warn("[vendor] ESM import failed, fallback to UMD via /vendor:", String(e?.message || e));
+  }
+
+  // 2) Fallback: dein Worker /vendor (wenn du unbedingt ein Global brauchst)
   const workerBases = [
     "https://api.inpinity.online",
     "https://inpi-proxy-nft.s-plat.workers.dev",
   ];
   const workerCandidates = workerBases.map(b => `${b}/vendor/mpl-token-metadata-umd.js`);
 
-  // 2) Öffentliche CDNs (Fallbacks)
-  const cdnCandidates = [
-    // 3.4.x / 3.3.x
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
-    // stabile 2.x als Notnagel
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@2.10.4/dist/index.umd.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@2.10.4/dist/index.umd.js",
-  ];
+  let lastErr;
+  for (const u of workerCandidates) {
+    try {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = u;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`script load failed: ${u}`));
+        document.head.appendChild(s);
+      });
 
-  const used = await loadScriptFromList([...workerCandidates, ...cdnCandidates]);
+      TM = window.mpl_token_metadata
+        || window.mplTokenMetadata
+        || (window.metaplex && window.metaplex.mplTokenMetadata);
 
-  TM = window.mpl_token_metadata
-    || window.mplTokenMetadata
-    || (window.metaplex && window.metaplex.mplTokenMetadata);
+      if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
 
-  if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
-
-  TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
-  TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
-
-  console.log("[vendor] mpl-token-metadata ready", { from: used, programId: TOKEN_METADATA_PROGRAM_ID.toString() });
-  return TM;
+      TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
+      TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+      console.log("[vendor] mpl-token-metadata ready (KV/UMD)", { from: u, programId: TOKEN_METADATA_PROGRAM_ID.toString() });
+      return TM;
+    } catch (e) {
+      lastErr = e;
+      console.warn("[vendor] fail:", String(e?.message || e));
+    }
+  }
+  throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden");
 }
 async function ensureTM(){ return loadTM(); }
 
