@@ -30,6 +30,12 @@ const CFG = {
     "https://cloudflare-ipfs.com/ipfs",
     "https://ipfs.inpinity.online/ipfs"
   ],
+
+  // NEU: API-Basen (Route + workers.dev) für /vendor und /mints Endpunkte
+  API_BASES: [
+    "https://api.inpinity.online",
+    "https://inpi-proxy-nft.s-plat.workers.dev"
+  ]
 };
 
 /* ==================== SOLANA IMPORTS (ESM) ==================== */
@@ -49,26 +55,59 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA via UMD (aus DEINEM Worker) ==================== */
-/*  WICHTIG:
-    - Entfernt deinen alten Import von esm.sh für mpl-token-metadata (der 404 machte).
-    - Lädt den UMD-Build einmalig und stellt Wrapper bereit, die mit V2/V3 funktionieren. */
+/* ==================== METAPLEX TOKEN METADATA via UMD (robust) ==================== */
 let TM = null;
 let TM_PROGRAM_ID_V1 = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 
+/** Script-Loader mit Fallbacks (nacheinander versuchen) */
+async function loadScriptFromList(urls) {
+  let lastErr;
+  for (const u of urls) {
+    try {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = u;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`script load failed: ${u}`));
+        document.head.appendChild(s);
+      });
+      return u;
+    } catch (e) {
+      lastErr = e;
+      console.warn("[vendor] failed:", u, String(e?.message||e));
+    }
+  }
+  throw lastErr || new Error("no vendor candidate worked");
+}
+
+/** Lädt mpl-token-metadata (UMD) über Worker → CDN-Fallbacks */
 async function loadTM() {
   if (TM) return TM;
-  await new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://api.inpinity.online/vendor/mpl-token-metadata-umd.js';
-    s.async = true;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('mpl-token-metadata UMD konnte nicht geladen werden'));
-    document.head.appendChild(s);
-  });
-  TM = window.mpl_token_metadata || window.mplTokenMetadata || (window.metaplex && window.metaplex.mplTokenMetadata);
+
+  const candidates = [
+    // 1) Eigener Worker
+    ...CFG.API_BASES.map(b => `${b}/vendor/mpl-token-metadata-umd.js`),
+
+    // 2) CDN-Fallbacks (versch. Pfade/Builds probieren)
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
+  ];
+
+  const used = await loadScriptFromList(candidates);
+  console.log("[vendor] mpl-token-metadata loaded from:", used);
+
+  TM = window.mpl_token_metadata
+    || window.mplTokenMetadata
+    || (window.metaplex && window.metaplex.mplTokenMetadata);
+
   if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
+
   TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
   TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
   return TM;
@@ -101,7 +140,7 @@ function tmVerifyCollectionInstr(obj) {
   if (typeof TM.createVerifyCollectionInstruction === 'function') {
     return TM.createVerifyCollectionInstruction(obj);
   }
-  return null; // im Zweifel einfach ohne Verify fortfahren
+  return null; // notfalls ohne Verify fortfahren
 }
 function tmUpdateMetadataV2Instr(accounts, args) {
   if (typeof TM.createUpdateMetadataAccountV2Instruction === 'function') {
@@ -170,6 +209,36 @@ const toHttp = (u)=>{
 };
 const uriForId = (id)=>`ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const desiredName = (id)=>`Pi Pyramid #${id}`;
+
+/* ==================== REGISTRY: Mints speichern/abfragen ==================== */
+async function recordMint(id, mint58, wallet58, signature) {
+  const payload = JSON.stringify({ id, mint: mint58, wallet: wallet58, sig: signature });
+  const heads = { "content-type": "application/json" };
+
+  for (const base of CFG.API_BASES) {
+    try {
+      const r = await fetch(`${base}/mints`, { method: "POST", headers: heads, body: payload });
+      if (r.ok) { log("mint recorded", { base, id, mint58, wallet58 }); return true; }
+      log("mint record failed", { base, status: r.status });
+    } catch (e) {
+      log("mint record error", { base, err: String(e?.message||e) });
+    }
+  }
+  return false;
+}
+
+async function fetchMyMints(wallet58, limit=10) {
+  for (const base of CFG.API_BASES) {
+    try {
+      const url = new URL(`${base}/mints/by-wallet`);
+      url.searchParams.set("wallet", wallet58);
+      url.searchParams.set("limit", String(limit));
+      const r = await fetch(url, { cache: "no-store" });
+      if (r.ok) return await r.json();
+    } catch {}
+  }
+  return { items: [] };
+}
 
 /* ==================== STATE ==================== */
 let connection=null, phantom=null, originalBtnText="";
@@ -530,7 +599,7 @@ async function doMint(){
     const donationLamports=Math.round(donation*1e9);
 
     const conn=await ensureConnection();
-    await ensureTM(); // <<< WICHTIG: bevor PDAs/Instruktionen genutzt werden
+    await ensureTM(); // <<< WICHTIG
     const wallet=phantom; const payer=wallet.publicKey;
     const collectionMint=new PublicKey(CFG.COLLECTION_MINT);
     const creatorPk=new PublicKey(CFG.CREATOR);
@@ -550,7 +619,7 @@ async function doMint(){
       return;
     }
 
-    /* === FALL B: Normaler Mint der nächsten freien ID === */
+    /* === FALL B: Normaler Mint === */
     await softAssertCollection(conn, collectionMint);
 
     const nftName=desiredName(id); const nftUri=uriForId(id);
@@ -605,20 +674,6 @@ async function doMint(){
       ));
     }
 
-    // Collection verify (nur wenn Creator selbst mintet)
-    if (isSelf){
-      const instr = tmVerifyCollectionInstr({
-        metadata: metadataPda,
-        collectionAuthority: payer,
-        payer,
-        updateAuthority: payer,
-        collectionMint,
-        collection: findMetadataPda(collectionMint),
-        collectionMasterEditionAccount: findMasterEditionPda(collectionMint)
-      });
-      if (instr) tx.add(instr);
-    }
-
     setStatus("Bitte im Wallet signieren…","info");
     const signature=await signSendWithRetry(conn, tx, wallet, mintKeypair);
 
@@ -630,6 +685,16 @@ async function doMint(){
       "ok"
     );
     setTimeout(()=>{ const c=document.getElementById("copyTx"); if (c) c.onclick=()=>navigator.clipboard.writeText(signature); },0);
+
+    // === Registry persistieren (ID, Mint, Wallet, Sig)
+    try {
+      await recordMint(
+        id,
+        mint.toBase58(),
+        payer.toBase58(),
+        signature
+      );
+    } catch {}
 
     await markClaimed(id); claimedSet.add(id); recomputeAvailable();
     await setNextFreeId(); await updateBalance();
@@ -667,12 +732,42 @@ function applyMintButtonState(){
   btn.disabled=!ok;
 }
 
+/* ==================== OPTIONAL: "Meine Mints" UI ==================== */
+async function onShowMyMints() {
+  try{
+    if (!phantom?.publicKey) return setStatus("Bitte zuerst Wallet verbinden.","warn");
+    const wallet58 = phantom.publicKey.toBase58();
+    const res = await fetchMyMints(wallet58, 10);
+    const list = Array.isArray(res?.items) ? res.items : [];
+    const box = $("myMintsBox");
+    if (!box) return;
+    if (!list.length) {
+      box.innerHTML = `<div class="muted">Keine Einträge gefunden.</div>`;
+      return;
+    }
+    box.innerHTML = "";
+    list.forEach(row => {
+      const el = document.createElement("div");
+      el.className = "mint-row";
+      const link = `https://solscan.io/tx/${row.sig || row.signature || ""}`;
+      const mint = row.mint || "";
+      const id = row.id ?? "—";
+      el.innerHTML = `
+        <div><strong>#${id}</strong> – ${mint.slice(0,4)}…${mint.slice(-4)}</div>
+        <div><a class="link" href="${link}" target="_blank" rel="noopener">Tx ansehen</a></div>
+      `;
+      box.appendChild(el);
+    });
+  }catch(e){ log("myMints error", String(e?.message||e)); }
+}
+
 /* ==================== UI WIRING ==================== */
 function wireUI(){
   $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
   $("randBtn")?.addEventListener("click", setNextFreeId);
   $("tokenId")?.addEventListener("input", updatePreview);
+  $("myMintsBtn")?.addEventListener("click", onShowMyMints);
 
   // Donation-Pills
   const pills=Array.from(document.querySelectorAll('#donationOptions .pill'));
