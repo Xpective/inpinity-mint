@@ -32,7 +32,7 @@ const CFG = {
     const w = window;
     if (!w.ethereum) w.ethereum = {};
     if (typeof w.ethereum.setExternalProvider !== "function") {
-      w.ethereum.setExternalProvider = function(){};
+      w.ethereum.setExternalProvider = function(){ /* no-op */ };
     }
   } catch {}
 })();
@@ -54,14 +54,68 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-import TMmod from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020";
-const tm = TMmod?.default ?? TMmod;
+/* -------- Metaplex Token Metadata (ESM, dynamische Auswahl) -------- */
+import * as TMraw from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020&external=@solana/web3.js";
 
-// (optional) Sanity-Check – einmalig beim Laden:
-if (typeof tm.createCreateMetadataAccountV3Instruction !== "function") {
-  console.warn("[TM] Exports:", Object.keys(tm));
-  throw new Error("Metaplex TM: Export createCreateMetadataAccountV3Instruction fehlt (Check bundling).");
+let TM = null; // Facade mit stabilen Funktionsnamen
+
+function pickInstructionSet(obj) {
+  if (!obj) return null;
+  const keys = Object.keys(obj);
+
+  // Kern-Instruktionen (Namensvarianten tolerant)
+  const metaKey    = keys.find(k => /^createCreateMetadataAccount.*Instruction$/.test(k));
+  const editionKey = keys.find(k => /^createCreateMasterEdition.*Instruction$/.test(k));
+
+  // Verifies (optional)
+  const sizedVerifyKey     = keys.find(k => /^createVerifySizedCollectionItemInstruction$/.test(k));
+  const sizedSetVerifyKey  = keys.find(k => /^createSetAndVerifySizedCollectionItemInstruction$/.test(k));
+  const legacyVerifyKey    = keys.find(k => /^createVerifyCollectionInstruction$/.test(k));
+  const legacySetVerifyKey = keys.find(k => /^createSetAndVerifyCollectionInstruction$/.test(k));
+
+  if (metaKey && editionKey) {
+    return {
+      createCreateMetadataAccount: obj[metaKey],
+      createCreateMasterEdition:   obj[editionKey],
+      createVerifySizedCollectionItem:        sizedVerifyKey    ? obj[sizedVerifyKey]    : undefined,
+      createSetAndVerifySizedCollectionItem:  sizedSetVerifyKey ? obj[sizedSetVerifyKey] : undefined,
+      createVerifyCollection:                 legacyVerifyKey    ? obj[legacyVerifyKey]   : undefined,
+      createSetAndVerifyCollection:           legacySetVerifyKey ? obj[legacySetVerifyKey]: undefined,
+      _metaKey: metaKey,
+      _editionKey: editionKey,
+    };
+  }
+  return null;
 }
+
+function buildTmFacade() {
+  if (TM) return TM;
+
+  // Mögliche „Wurzeln“ des Bundles durchprobieren
+  const candidates = [
+    TMraw?.default,
+    TMraw,
+    TMraw?.default?.mplTokenMetadata,
+    TMraw?.default?.metadata,
+    TMraw?.default?.programs?.metadata,
+    TMraw?.default?.TokenMetadataProgram,
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    const picked = pickInstructionSet(c);
+    if (picked?.createCreateMetadataAccount && picked?.createCreateMasterEdition) {
+      console.log("[TM] OK – using keys:", { meta: picked._metaKey, edition: picked._editionKey });
+      TM = picked;
+      return TM;
+    }
+  }
+
+  // Debug-Ausgabe hilft beim nächsten Schritt, falls sich Namen ändern
+  const dbg = TMraw?.default ?? TMraw ?? {};
+  console.warn("[TM] Exports:", Object.keys(dbg));
+  throw new Error("Metaplex TM: passende Instruktions-Exporte nicht gefunden (Bundle-Variante).");
+}
+
 /* ==================== TM PROGRAM/PDAs ==================== */
 const te = new TextEncoder();
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
@@ -386,7 +440,7 @@ async function doMint(){
     const lblEl=btn?.querySelector(".btn-label"); if (lblEl){ originalBtnText=lblEl.textContent; lblEl.textContent="Verarbeite..."; }
     setSpin(true);
 
-    // tm kommt direkt aus dem ESM-Import oben
+    const tm = buildTmFacade(); // stabile Funktionsnamen, egal ob V2/V3 im Bundle
 
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
     const idRaw=Number($("tokenId").value||0);
@@ -431,41 +485,53 @@ async function doMint(){
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
-    tx.add(tm.createCreateMetadataAccountV3Instruction(
-      { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
-      { createMetadataAccountArgsV3:{
-          data:{
-            name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
-            creators:[{address:creatorPk,verified:isSelf,share:100}],
-            collection:{key:collectionMint,verified:false}, uses:null
-          },
-          isMutable:true, collectionDetails:null
+    // Create Metadata
+    tx.add(
+      tm.createCreateMetadataAccount(
+        { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
+        { createMetadataAccountArgsV3:{
+            data:{
+              name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
+              creators:[{address:creatorPk,verified:isSelf,share:100}],
+              collection:{key:collectionMint,verified:false}, uses:null
+            },
+            isMutable:true, collectionDetails:null
+          }
         }
-      }
-    ));
+      )
+    );
 
-    tx.add(tm.createCreateMasterEditionV3Instruction(
-      { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
-      { createMasterEditionArgs:{ maxSupply:0 } }
-    ));
+    // Master Edition
+    tx.add(
+      tm.createCreateMasterEdition(
+        { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
+        { createMasterEditionArgs:{ maxSupply:0 } }
+      )
+    );
 
+    // Verify (wenn Creator selbst mintet)
     if (isSelf){
       const collMdPda=findMetadataPda(collectionMint);
       const collEdPda=findMasterEditionPda(collectionMint);
-      const hasSizedVerify=typeof tm.createVerifySizedCollectionItemInstruction==="function";
-      const hasSetAndSized=typeof tm.createSetAndVerifySizedCollectionItemInstruction==="function";
-      const hasLegacyVerify=typeof tm.createVerifyCollectionInstruction==="function";
-      const hasLegacySet=typeof tm.createSetAndVerifyCollectionInstruction==="function";
 
-      if (hasSizedVerify || hasSetAndSized){
-        const sizedIx = hasSizedVerify ? tm.createVerifySizedCollectionItemInstruction
-                                       : tm.createSetAndVerifySizedCollectionItemInstruction;
-        tx.add(sizedIx({ metadata:metadataPda, collectionAuthority:payer, payer,
-                         collectionMint, collection:collMdPda, collectionMasterEditionAccount:collEdPda }));
-      } else if (hasLegacyVerify || hasLegacySet){
-        const legacyIx = hasLegacyVerify ? tm.createVerifyCollectionInstruction
-                                         : tm.createSetAndVerifyCollectionInstruction;
-        tx.add(legacyIx({ metadata:metadataPda, collectionAuthority:payer, payer, collectionMint, collection:collMdPda }));
+      if (typeof tm.createVerifySizedCollectionItem === "function") {
+        tx.add(tm.createVerifySizedCollectionItem({
+          metadata:metadataPda, collectionAuthority:payer, payer,
+          collectionMint, collection:collMdPda, collectionMasterEditionAccount:collEdPda
+        }));
+      } else if (typeof tm.createSetAndVerifySizedCollectionItem === "function") {
+        tx.add(tm.createSetAndVerifySizedCollectionItem({
+          metadata:metadataPda, collectionAuthority:payer, payer,
+          collectionMint, collection:collMdPda, collectionMasterEditionAccount:collEdPda
+        }));
+      } else if (typeof tm.createVerifyCollection === "function") {
+        tx.add(tm.createVerifyCollection({
+          metadata:metadataPda, collectionAuthority:payer, payer, collectionMint, collection:collMdPda
+        }));
+      } else if (typeof tm.createSetAndVerifyCollection === "function") {
+        tx.add(tm.createSetAndVerifyCollection({
+          metadata:metadataPda, collectionAuthority:payer, payer, collectionMint, collection:collMdPda
+        }));
       } else {
         console.warn("[TM] Keine passende Verify-Instruction im Modul gefunden.");
       }
