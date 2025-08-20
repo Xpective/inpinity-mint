@@ -15,19 +15,27 @@ const CFG = {
     "https://api.inpinity.online/claims",
     "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
   ],
+
+  // >>> Deine Schlüssel & Collection <<<
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   MINT_FEE_SOL: 0.02,
   COLLECTION_MINT: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
+
   ROYALTY_BPS: 700,
   MAX_INDEX: 9999,
+
+  // IPFS-CIDs
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
+
   GATEWAYS: [
     "https://ipfs.io/ipfs",
     "https://cloudflare-ipfs.com/ipfs",
     "https://ipfs.inpinity.online/ipfs"
   ],
+
+  // für /vendor und /mints
   API_BASES: [
     "https://api.inpinity.online",
     "https://inpi-proxy-nft.s-plat.workers.dev"
@@ -56,6 +64,7 @@ let TM = null;
 let TM_PROGRAM_ID_V1 = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 
+// Kandidaten nacheinander laden
 async function loadScriptFromList(urls) {
   let lastErr;
   for (const u of urls) {
@@ -82,23 +91,25 @@ async function loadScriptFromList(urls) {
 async function loadTM() {
   if (TM) return TM;
 
+  // 1) Eigener Worker (stabil, per VENDOR-KV gecached)
   const workerBases = [
     "https://api.inpinity.online",
     "https://inpi-proxy-nft.s-plat.workers.dev",
   ];
   const workerCandidates = workerBases.map(b => `${b}/vendor/mpl-token-metadata-umd.js`);
 
+  // 2) Öffentliche CDNs (Fallbacks)
   const cdnCandidates = [
+    // 3.4.x / 3.3.x
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.min.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.min.js",
+    // stabile 2.x als Notnagel
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@2.10.4/dist/index.umd.js",
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@2.10.4/dist/index.umd.js",
   ];
 
   const used = await loadScriptFromList([...workerCandidates, ...cdnCandidates]);
@@ -218,7 +229,14 @@ let connection=null, phantom=null, originalBtnText="";
 let claimedSet=new Set(), availableIds=[];
 let inFlight=false, previewReady=false;
 
-/* ==================== REGISTRY (optional) ==================== */
+/* ==================== UX Helpers (früh, damit nie „undefined“) ==================== */
+function applyMintButtonState(){
+  const btn=$("mintBtn"); if (!btn) return;
+  const ok=!!phantom?.publicKey && previewReady;
+  btn.disabled=!ok;
+}
+
+/* ==================== REGISTRY ==================== */
 async function recordMint(id, mint58, wallet58, signature) {
   const payload = JSON.stringify({ id, mint: mint58, wallet: wallet58, sig: signature });
   const heads = { "content-type": "application/json" };
@@ -263,7 +281,7 @@ async function ensureConnection(){
   return connection;
 }
 
-/* ==================== UI: Donation ==================== */
+/* ==================== Donation UI ==================== */
 function getSelectedDonation(){
   const sel=document.querySelector('#donationOptions input[name="donation"]:checked');
   if (!sel) return 0;
@@ -280,7 +298,7 @@ async function connectPhantom(){
   try{
     const w=window.solana;
     if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
-    const resp=await w.connect();
+    const resp=await w.connect(); // Popup
     phantom=w;
 
     await ensureConnection();
@@ -459,7 +477,7 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
 
   log("collection: ok", { name, symbol: sym, uri });
 
-  // payerPk darf leer sein (z.B. beim Boot ohne Wallet). Kein Throw hier.
+  // payerPk darf leer sein (Boot ohne Wallet)
   return { mdPda, edPda, name, symbol: sym, uri };
 }
 async function softAssertCollection(conn, collectionMintPk){
@@ -494,7 +512,7 @@ async function signSendWithRetry(conn, tx, wallet, extraSigner){
   for (let attempt=0; attempt<3; attempt++){
     const {blockhash,lastValidBlockHeight}=await conn.getLatestBlockhash();
     tx.recentBlockhash=blockhash; tx.feePayer=wallet.publicKey;
-    const signed=await wallet.signTransaction(tx);
+    const signed=await wallet.signTransaction(tx); // Phantom Popup
 
     const sim=await conn.simulateTransaction(signed,{sigVerify:false,commitment:"processed"});
     if (sim?.value?.logs) log("simulate logs", sim.value.logs);
@@ -513,7 +531,7 @@ async function signSendWithRetry(conn, tx, wallet, extraSigner){
   throw new Error("Blockhash wiederholt abgelaufen. Bitte erneut versuchen.");
 }
 
-/* ==================== REPAIR ==================== */
+/* ==================== REPAIR: bestehendes NFT suchen & fixen ==================== */
 async function findExistingMintByIdForCreator(conn, id){
   await ensureTM();
   const owner = new PublicKey(CFG.CREATOR);
@@ -633,6 +651,7 @@ async function doMint(){
     const creatorPk=new PublicKey(CFG.CREATOR);
     const isSelf=payer.equals(creatorPk);
 
+    /* === FALL A: bereits gemintet → Auto-Repair für Creator === */
     if (claimedSet.has(id)){
       if (!isSelf) throw new Error(`ID #${id} ist bereits gemintet.`);
       setStatus(`ID #${id} existiert bereits – prüfe & repariere (Verify/Metadata)…`,"info");
@@ -646,21 +665,23 @@ async function doMint(){
       return;
     }
 
-    await softAssertCollection(conn, collectionMint);
+    /* === FALL B: Normaler Mint === */
+    await softAssertCollection(conn, collectionMint); // Logs "collection: start/ok"
 
     const nftName=desiredName(id); const nftUri=uriForId(id);
 
     const tx=new Transaction();
     await setSmartPriority(tx, conn);
 
+    // Creator-Fee + optional Donation (nur wenn nicht Creator selbst)
     const feeLamports=isSelf?0:Math.round(CFG.MINT_FEE_SOL*1e9);
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
 
+    // Mint Account + init + ATA + mint 1
     const mintKeypair=Keypair.generate(); const mint=mintKeypair.publicKey;
 
-    // FIX: conn statt connection
-    const rentLamports=await getMinimumBalanceForRentExemptMint(conn);
+    const rentLamports=await getMinimumBalanceForRentExemptMint(conn); // FIX: conn
     tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
     tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
 
@@ -670,9 +691,11 @@ async function doMint(){
 
     tx.add(createMintToInstruction(mint,ata,payer,1));
 
+    // PDAs
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
+    // Create Metadata
     tx.add(tmCreateMetadataInstr(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
       {
@@ -683,11 +706,13 @@ async function doMint(){
       }
     ));
 
+    // Master Edition V3
     tx.add(tmMasterEditionV3Instr(
       { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
       { createMasterEditionArgs:{ maxSupply:0 } }
     ));
 
+    // Bei Fremd-Mint: Update-Authority → CREATOR
     if (!isSelf){
       tx.add(tmUpdateMetadataV2Instr(
         { metadata: metadataPda, updateAuthority: payer },
@@ -707,6 +732,7 @@ async function doMint(){
     );
     setTimeout(()=>{ const c=document.getElementById("copyTx"); if (c) c.onclick=()=>navigator.clipboard.writeText(signature); },0);
 
+    // Registry
     try { await recordMint(id, mint.toBase58(), payer.toBase58(), signature); } catch {}
 
     await markClaimed(id); claimedSet.add(id); recomputeAvailable();
@@ -736,13 +762,6 @@ function handleError(context,e){
   const user=userFriendly(msg);
   setStatus(`❌ ${user}`,"err");
   log(`${context} ${msg}`);
-}
-
-/* ==================== UX Helpers ==================== */
-function applyMintButtonState(){
-  const btn=$("mintBtn"); if (!btn) return;
-  const ok=!!phantom?.publicKey && previewReady;
-  btn.disabled=!ok;
 }
 
 /* ==================== OPTIONAL: "Meine Mints" UI ==================== */
@@ -782,6 +801,7 @@ function wireUI(){
   $("tokenId")?.addEventListener("input", updatePreview);
   $("myMintsBtn")?.addEventListener("click", onShowMyMints);
 
+  // Donation-Pills
   const pills=Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer=$("customDonationContainer");
   const customInput=$("customDonationInput");
