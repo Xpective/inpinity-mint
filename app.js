@@ -64,6 +64,9 @@ import {
   createAssociatedTokenAccountInstruction,
   createInitializeMint2Instruction,
   createMintToInstruction,
+  // 👇 neu: für Authority-Handovers
+  createSetAuthorityInstruction,
+  AuthorityType,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 /* ==================== METAPLEX TOKEN METADATA (robuster Loader) ==================== */
@@ -723,24 +726,25 @@ async function doMint(){
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
 
-    // Mint Account + init + ATA + mint 1
-    const mintKeypair=Keypair.generate(); const mint=mintKeypair.publicKey;
+    // === 1) Mint Account + InitializeMint (Authority = payer, temporär)
+    const mintKeypair=Keypair.generate();
+    const mint=mintKeypair.publicKey;
 
     const rentLamports=await getMinimumBalanceForRentExemptMint(conn);
-    tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
+    tx.add(SystemProgram.createAccount({
+      fromPubkey:payer,
+      newAccountPubkey:mint,
+      space:MINT_SIZE,
+      lamports:rentLamports,
+      programId:TOKEN_PROGRAM_ID
+    }));
     tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
 
-    const ata=await getAssociatedTokenAddress(mint,payer,false,TOKEN_PROGRAM_ID,ASSOCIATED_TOKEN_PROGRAM_ID);
-    const ataInfo=await conn.getAccountInfo(ata);
-    if (!ataInfo) tx.add(createAssociatedTokenAccountInstruction(payer,ata,payer,mint));
-
-    tx.add(createMintToInstruction(mint,ata,payer,1));
-
-    // PDAs
+    // === PDAs
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
-    // Create Metadata
+    // === 2) Create Metadata
     tx.add(tmCreateMetadataInstr(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
       {
@@ -751,13 +755,49 @@ async function doMint(){
       }
     ));
 
-    // Master Edition V3
+    // === 3) Create Master Edition V3
     tx.add(tmMasterEditionV3Instr(
       { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
       { createMasterEditionArgs:{ maxSupply:0 } }
     ));
 
-    // Bei Fremd-Mint: Update-Authority → CREATOR
+    // === 4) ATA anlegen (falls fehlt) + 1 Token minten (Authority = payer)
+    const ata=await getAssociatedTokenAddress(mint,payer,false,TOKEN_PROGRAM_ID,ASSOCIATED_TOKEN_PROGRAM_ID);
+    const ataInfo=await conn.getAccountInfo(ata);
+    if (!ataInfo) tx.add(createAssociatedTokenAccountInstruction(payer,ata,payer,mint));
+    tx.add(createMintToInstruction(mint,ata,payer,1));
+
+    // === 5) SetAuthority → MasterEdition (mintTokens + freezeAccount), wie bei #0
+    tx.add(createSetAuthorityInstruction(
+      mint,
+      payer,
+      AuthorityType.MintTokens,
+      masterEditionPda,
+      []
+    ));
+    tx.add(createSetAuthorityInstruction(
+      mint,
+      payer,
+      AuthorityType.FreezeAccount,
+      masterEditionPda,
+      []
+    ));
+
+    // === 6) Verify Collection
+    const collMdPda  = findMetadataPda(collectionMint);
+    const collEdPda  = findMasterEditionPda(collectionMint);
+    const verifyInstr = tmVerifyCollectionInstr({
+      metadata: metadataPda,
+      collectionAuthority: payer,
+      payer,
+      updateAuthority: payer,
+      collectionMint: collectionMint,
+      collection: collMdPda,
+      collectionMasterEditionAccount: collEdPda
+    });
+    if (verifyInstr) tx.add(verifyInstr);
+
+    // === 7) Bei Fremd-Mint: Update-Authority → CREATOR
     if (!isSelf){
       tx.add(tmUpdateMetadataV2Instr(
         { metadata: metadataPda, updateAuthority: payer },
