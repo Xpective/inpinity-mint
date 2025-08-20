@@ -841,24 +841,25 @@ function wireUI(){
   $("tokenId")?.addEventListener("input", updatePreview);
   $("myMintsBtn")?.addEventListener("click", onShowMyMints);
 
-  // Donation-Pills
-  const pills=Array.from(document.querySelectorAll('#donationOptions .pill'));
-  const customContainer=$("customDonationContainer");
-  const customInput=$("customDonationInput");
-  const applyDonationSelection=()=>{
-    pills.forEach(p=>p.classList.remove("active"));
-    const checked=document.querySelector('#donationOptions input[name="donation"]:checked');
-    if (!checked) return;
-    const pill=checked.closest(".pill"); if (pill) pill.classList.add("active");
-    if (customContainer) customContainer.style.display=(checked.value==="custom")?"inline-flex":"none";
-    updateEstimatedCost();
-  };
-  pills.forEach(pill=>p
-    .addEventListener("click",()=>{
-      const radio=pill.querySelector('input[name="donation"]'); if (!radio) return;
-      radio.checked=true; applyDonationSelection();
-    })
-  );
+// Donation-Pills
+const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
+const customContainer = $("customDonationContainer");
+const customInput = $("customDonationInput");
+const applyDonationSelection = () => {
+  pills.forEach(pill => pill.classList.remove("active")); // <— p -> pill
+  const checked = document.querySelector('#donationOptions input[name="donation"]:checked');
+  if (!checked) return;
+  const pill = checked.closest(".pill"); if (pill) pill.classList.add("active");
+  if (customContainer) customContainer.style.display = (checked.value === "custom") ? "inline-flex" : "none";
+  updateEstimatedCost();
+};
+pills.forEach(pill => {
+  pill.addEventListener("click", () => {
+    const radio = pill.querySelector('input[name="donation"]'); if (!radio) return;
+    radio.checked = true;
+    applyDonationSelection();
+  });
+});
   document.querySelectorAll('#donationOptions input[name="donation"]').forEach(radio=>{
     radio.addEventListener("change", applyDonationSelection);
   });
