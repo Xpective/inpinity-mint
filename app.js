@@ -1,6 +1,18 @@
 /* ==================== BUILD-ID ==================== */
 const BUILD_TAG = "mint-v22";
 
+await bootstrapClaims();
+const inp=$("tokenId"); if (inp) inp.value="0";
+await setNextFreeId();
+await updatePreview();
+applyMintButtonState();
+try {
+  const conn = await ensureConnection();
+  await ensureTM();
+  await softAssertCollection(conn, new PublicKey(CFG.COLLECTION_MINT));
+} catch (e) {
+  log("collection preflight at boot failed", String(e?.message||e));
+}
 /* ==================== KONFIG ==================== */
 const CFG = {
   RPCS: [
@@ -82,25 +94,61 @@ async function loadScriptFromList(urls) {
   throw lastErr || new Error("no vendor candidate worked");
 }
 
-/** Lädt mpl-token-metadata (UMD) über Worker → CDN-Fallbacks */
+/* ==================== METAPLEX TOKEN METADATA via UMD (robust + Logs) ==================== */
+let TM = null;
+let TM_PROGRAM_ID_V1 = null;
+let TOKEN_METADATA_PROGRAM_ID = null;
+
+async function loadScriptFromList(urls) {
+  let lastErr;
+  for (const u of urls) {
+    try {
+      console.log("[vendor] try:", u);
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = u;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`script load failed: ${u}`));
+        document.head.appendChild(s);
+      });
+      console.log("[vendor] ok:", u);
+      return u;
+    } catch (e) {
+      lastErr = e;
+      console.warn("[vendor] fail:", String(e?.message||e));
+    }
+  }
+  throw lastErr || new Error("no vendor candidate worked");
+}
+
 async function loadTM() {
   if (TM) return TM;
 
-  const candidates = [
-    // 1) Eigener Worker
-    ...CFG.API_BASES.map(b => `${b}/vendor/mpl-token-metadata-umd.js`),
+  // 1) Eigener Worker (mehrere Domains)
+  const workerBases = [
+    "https://api.inpinity.online",
+    "https://inpi-proxy-nft.s-plat.workers.dev",
+  ];
+  const workerCandidates = workerBases.map(b => `${b}/vendor/mpl-token-metadata-umd.js`);
 
-    // 2) CDN-Fallbacks (versch. Pfade/Builds probieren)
+  // 2) Öffentliche CDNs (mehr Varianten, auch ohne /dist und mit .min.js)
+  const cdnCandidates = [
+    // i) 3.4.x
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js",
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js",
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js",
+    // ii) 3.3.x
     "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
     "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js",
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.min.js",
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.min.js",
   ];
 
-  const used = await loadScriptFromList(candidates);
-  console.log("[vendor] mpl-token-metadata loaded from:", used);
+  const used = await loadScriptFromList([...workerCandidates, ...cdnCandidates]);
 
   TM = window.mpl_token_metadata
     || window.mplTokenMetadata
@@ -110,7 +158,50 @@ async function loadTM() {
 
   TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
   TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+
+  console.log("[vendor] mpl-token-metadata ready", { from: used, programId: TOKEN_METADATA_PROGRAM_ID.toString() });
   return TM;
+}
+async function ensureTM(){ return loadTM(); }
+
+function tmCreateMetadataInstr(accounts, dataV2Like) {
+  if (typeof TM.createCreateMetadataAccountV2Instruction === 'function') {
+    return TM.createCreateMetadataAccountV2Instruction(accounts, {
+      createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true }
+    });
+  }
+  if (typeof TM.createCreateMetadataAccountV3Instruction === 'function') {
+    return TM.createCreateMetadataAccountV3Instruction(accounts, {
+      createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null }
+    });
+  }
+  throw new Error('mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar');
+}
+function tmMasterEditionV3Instr(accounts, args) {
+  if (typeof TM.createCreateMasterEditionV3Instruction === 'function') {
+    return TM.createCreateMasterEditionV3Instruction(accounts, args);
+  }
+  throw new Error('mpl-token-metadata: MasterEditionV3-Instruktion fehlt');
+}
+function tmVerifyCollectionInstr(obj) {
+  if (typeof TM.createSetAndVerifyCollectionInstruction === 'function') {
+    return TM.createSetAndVerifyCollectionInstruction(obj);
+  }
+  if (typeof TM.createVerifyCollectionInstruction === 'function') {
+    return TM.createVerifyCollectionInstruction(obj);
+  }
+  return null;
+}
+function tmUpdateMetadataV2Instr(accounts, args) {
+  if (typeof TM.createUpdateMetadataAccountV2Instruction === 'function') {
+    return TM.createUpdateMetadataAccountV2Instruction(accounts, { updateMetadataAccountArgsV2: args });
+  }
+  throw new Error('mpl-token-metadata: UpdateMetadataAccountV2 fehlt');
+}
+function tmDeserializeMetadata(data) {
+  if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
+  if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
+  throw new Error('mpl-token-metadata: Metadata.deserialize nicht verfügbar');
 }
 async function ensureTM(){ return loadTM(); }
 
@@ -209,6 +300,8 @@ const toHttp = (u)=>{
 };
 const uriForId = (id)=>`ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
 const desiredName = (id)=>`Pi Pyramid #${id}`;
+
+
 
 /* ==================== REGISTRY: Mints speichern/abfragen ==================== */
 async function recordMint(id, mint58, wallet58, signature) {
@@ -432,14 +525,55 @@ function renderPreview(id, meta){
 async function fetchAccountInfo(conn, pubkey){
   try{ return await conn.getAccountInfo(pubkey,"confirmed"); }catch{ return null; }
 }
-async function assertCanVerifyCollection(conn, payer, collectionMint){
-  await ensureTM();
-  const collMd=findMetadataPda(collectionMint);
-  const collEd=findMasterEditionPda(collectionMint);
-  const [mdAcc, edAcc]=await Promise.all([ fetchAccountInfo(conn,collMd), fetchAccountInfo(conn,collEd) ]);
-  if (!mdAcc || !edAcc) throw new Error("Collection-PDAs nicht gefunden. Stimmt COLLECTION_MINT?");
-  if (!payer) throw new Error("Kein Payer");
+async function fetchAccountInfo(conn, pubkey){
+  try{ return await conn.getAccountInfo(pubkey,"confirmed"); }catch{ return null; }
 }
+
+async function collectionPreflight(conn, payerPk, collectionMintPk){
+  await ensureTM();
+
+  const mdPda = findMetadataPda(collectionMintPk);
+  const edPda = findMasterEditionPda(collectionMintPk);
+
+  log("collection: start", {
+    collectionMint: collectionMintPk.toBase58(),
+    metadataPda: mdPda.toBase58(),
+    masterEditionPda: edPda.toBase58()
+  });
+
+  const [mdAcc, edAcc] = await Promise.all([
+    fetchAccountInfo(conn, mdPda),
+    fetchAccountInfo(conn, edPda),
+  ]);
+
+  if (!mdAcc) throw new Error("Collection-Preflight: Metadata PDA nicht gefunden");
+  if (!edAcc) throw new Error("Collection-Preflight: MasterEdition PDA nicht gefunden");
+
+  // Metadaten kurz auslesen
+  let md;
+  try { md = tmDeserializeMetadata(mdAcc.data); } catch {}
+  const name  = md?.data?.name?.trim?.() || "(unbekannt)";
+  const sym   = md?.data?.symbol?.trim?.() || "";
+  const uri   = md?.data?.uri?.trim?.() || "";
+
+  log("collection: ok", { name, symbol: sym, uri });
+
+  if (!payerPk) throw new Error("Kein Payer (Wallet) vorhanden");
+  return { mdPda, edPda, name, symbol: sym, uri };
+}
+
+// softer Wrapper (bricht Mint nicht ab, sondern loggt)
+async function softAssertCollection(conn, collectionMintPk){
+  try {
+    const payerPk = phantom?.publicKey || null;
+    await collectionPreflight(conn, payerPk, collectionMintPk);
+    return true;
+  } catch (e) {
+    log("collection: warn", String(e?.message||e));
+    return false;
+  }
+}
+
 async function softAssertCollection(conn, mint){
   try{ await assertCanVerifyCollection(conn, phantom?.publicKey, mint); }
   catch(e){ log("Warnung: Collection-Preflight skipped", e?.message||String(e)); }
