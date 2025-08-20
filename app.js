@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v21-mpl-v1-esm-seq-repair";
+const BUILD_TAG = "mint-v21";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
