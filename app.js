@@ -398,19 +398,34 @@ async function setNextFreeId(){
 }
 
 /* ==================== IPFS Helpers ==================== */
-const fetchWithTimeout = (u, ms=12000)=>Promise.race([
-  fetch(u,{cache:"no-store"}),
-  new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),ms))
+const fetchWithTimeout = (u, ms = 12000) => Promise.race([
+  fetch(u, { cache: "no-store" }),
+  new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))
 ]);
-async function fetchFirst(metaUrls){
-  return new Promise((resolve,reject)=>{
-    let done=false, errors=0;
-    metaUrls.forEach(u=>{
-      fetchWithTimeout(u).then(r=>{
+
+async function fetchFirst(metaUrls) {
+  return new Promise((resolve, reject) => {
+    let done = false, errors = 0;
+    metaUrls.forEach(async (u) => {
+      try {
+        const r = await fetchWithTimeout(u);
         if (done) return;
-        if (r.ok){ done=true; r.json().then(resolve).catch(()=>{}); }
-        else if (++errors===metaUrls.length) reject(new Error("all failed"));
-      }).catch(()=>{ if (!done && ++errors===metaUrls.length) reject(new Error("all failed")); });
+        if (r.ok) {
+          done = true;
+          const j = await r.json().catch(() => null);
+          if (j) {
+            log("meta ok", { url: u });
+            return resolve(j);
+          }
+        }
+        log("meta miss", { url: u, status: (r && r.status) || "n/a" });
+      } catch (e) {
+        log("meta err", { url: u, err: String(e?.message || e) });
+      } finally {
+        if (!done && ++errors === metaUrls.length) {
+          return reject(new Error("all failed"));
+        }
+      }
     });
   });
 }
@@ -418,14 +433,19 @@ async function fetchFirst(metaUrls){
 /* ==================== PREVIEW ==================== */
 const previewCache={};
 async function updatePreview(){
+  const urls = CFG.GATEWAYS.map(g => `${g}/${CFG.JSON_BASE_CID}/${id}.json`);
+log("meta try", { urls });
+let meta = null;
+try { meta = await fetchFirst(urls); } catch {}
   const clampId=(v)=>{ v=Number(v)||0; return Math.max(0, Math.min(CFG.MAX_INDEX, v)); };
   const id = clampId($("tokenId").value||0);
   $("tokenId").value=String(id);
-
+  
+  
   $("previewUri").textContent=uriForId(id);
   $("uriStatus").textContent="prüfe URI …";
   previewReady=false; applyMintButtonState();
-
+  
   const media=$("mediaBox"); const metaBox=$("metaBox");
   media.innerHTML='<span class="muted">Lade Vorschau…</span>'; metaBox.innerHTML="";
 
