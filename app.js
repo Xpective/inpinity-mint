@@ -37,7 +37,7 @@ const CFG = {
 import {
   generateSigner, publicKey as umiPk, base58, transactionBuilder, some, lamports
 } from "https://esm.sh/@metaplex-foundation/umi@1.2.0?bundle";
-import { createUmi as createUmiDefaults } from "https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.2.0?bundle";
+
 import { walletAdapterIdentity } from "https://esm.sh/@metaplex-foundation/umi-signer-wallet-adapters@1.2.0?bundle";
 
 import {
