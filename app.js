@@ -66,38 +66,15 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA via ESM->UMD Fallback ==================== */
-let TM = null;
-let TM_PROGRAM_ID_V1 = null;
-let TOKEN_METADATA_PROGRAM_ID = null;
-
-async function loadScriptFromList(urls) {
-  let lastErr;
-  for (const u of urls) {
-    try {
-      console.log("[vendor] try:", u);
-      await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = u;
-        s.async = true;
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error(`script load failed: ${u}`));
-        document.head.appendChild(s);
-      });
-      console.log("[vendor] ok:", u);
-      return u;
-    } catch (e) {
-      lastErr = e;
-      console.warn("[vendor] fail:", String(e?.message||e));
-    }
-  }
-  throw lastErr || new Error("no vendor candidate worked");
-}
+/* ==================== METAPLEX TOKEN METADATA (ESM-first, KV fallback) ==================== */
+let TM = null; // module namespace for mpl-token-metadata
+let TM_PROGRAM_ID_V1 = null; // metaqbxx...
+let TOKEN_METADATA_PROGRAM_ID = null; // PublicKey for PROGRAM_ID
 
 async function loadTM() {
   if (TM) return TM;
 
-  // 1) Versuche ESM (sauber, ohne Globals)
+  // 1) Try ESM directly (fastest, cleanest)
   try {
     const mod = await import(
       "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020"
@@ -106,96 +83,113 @@ async function loadTM() {
     TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
     TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
 
-    // sanity check: Metaplex program id beginnt mit "metaq"
-    if (!TOKEN_METADATA_PROGRAM_ID.toString().startsWith("metaq")) {
-      throw new Error("mpl-token-metadata: unerwarteter PROGRAM_ID Namespace");
-    }
+    // sanity: should start with "metaq"
+    const pid = TOKEN_METADATA_PROGRAM_ID.toString();
+    if (!pid.startsWith("metaq")) throw new Error("unexpected PROGRAM_ID for mpl-token-metadata");
 
-    console.log("[vendor] mpl-token-metadata ready (esm.sh)", {
-      programId: TOKEN_METADATA_PROGRAM_ID.toString()
-    });
+    console.log("[vendor] mpl-token-metadata ready (ESM)", { programId: pid });
     return TM;
   } catch (e) {
-    console.warn("[vendor] ESM import failed – fallback UMD via /vendor:", String(e?.message || e));
+    console.warn("[vendor] ESM import failed – will try KV fallback:", String(e?.message || e));
   }
 
-  // 2) Fallback: Worker-Vendor aus KV (stabil, keine CDNs)
-  // ...
-for (const u of workerCandidates) {
-  try {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = u;
-      s.async = true;
-      s.type = 'module';              // <<< WICHTIG: Modul, weil Shim 'import' benutzt
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error(`script load failed: ${u}`));
-      document.head.appendChild(s);
-    });
+  // 2) Fallback → load from your Worker KV: /vendor/mpl-token-metadata-umd.js
+  // NOTE: the KV file is actually a tiny ES module shim (see section 2 below).
+  const workerBases = [
+    "https://api.inpinity.online",
+    "https://inpi-proxy-nft.s-plat.workers.dev",
+  ];
+  const workerCandidates = workerBases.map(b => `${b}/vendor/mpl-token-metadata-umd.js`);
 
-    TM = window.mpl_token_metadata
-      || window.mplTokenMetadata
-      || (window.metaplex && window.metaplex.mplTokenMetadata);
+  let lastErr = null;
+  for (const u of workerCandidates) {
+    try {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = u;
+        s.async = true;
+        s.type = "module"; // IMPORTANT: our shim uses `import`, so it must be a module
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`script load failed: ${u}`));
+        document.head.appendChild(s);
+      });
 
-    if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
+      // our shim attaches multiple globals for safety
+      TM =
+        window.mpl_token_metadata ||
+        window.mplTokenMetadata ||
+        (window.metaplex && window.metaplex.mplTokenMetadata);
 
-    // ... (Rest wie gehabt)
-  TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
-  TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+      if (!TM) throw new Error("mpl-token-metadata UMD/global not found after KV load");
 
-  if (!TOKEN_METADATA_PROGRAM_ID.toString().startsWith("metaq")) {
-    throw new Error("mpl-token-metadata: unerwarteter PROGRAM_ID Namespace (UMD)");
+      TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
+      TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+
+      const pid = TOKEN_METADATA_PROGRAM_ID.toString();
+      if (!pid.startsWith("metaq")) {
+        throw new Error("unexpected PROGRAM_ID for KV mpl-token-metadata");
+      }
+
+      console.log("[vendor] mpl-token-metadata ready (KV fallback)", { from: u, programId: pid });
+      return TM;
+    } catch (e) {
+      lastErr = e;
+      console.warn("[vendor] KV candidate failed:", String(e?.message || e));
+    }
   }
-
-  console.log("[vendor] mpl-token-metadata ready (KV/UMD)", {
-    from: used,
-    programId: TOKEN_METADATA_PROGRAM_ID.toString()
-  });
-  return TM;
+  throw lastErr || new Error("Failed to load mpl-token-metadata from all sources");
 }
 async function ensureTM(){ return loadTM(); }
 
+/* ========== Thin compatibility wrappers (v2/v3) ========== */
 function tmCreateMetadataInstr(accounts, dataV2Like) {
-  if (typeof TM.createCreateMetadataAccountV2Instruction === 'function') {
+  if (typeof TM.createCreateMetadataAccountV2Instruction === "function") {
     return TM.createCreateMetadataAccountV2Instruction(accounts, {
-      createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true }
+      createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true },
     });
   }
-  if (typeof TM.createCreateMetadataAccountV3Instruction === 'function') {
+  if (typeof TM.createCreateMetadataAccountV3Instruction === "function") {
     return TM.createCreateMetadataAccountV3Instruction(accounts, {
-      createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null }
+      createMetadataAccountArgsV3: {
+        data: dataV2Like,
+        isMutable: true,
+        collectionDetails: null,
+      },
     });
   }
-  throw new Error('mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar');
+  throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) not available");
 }
 function tmMasterEditionV3Instr(accounts, args) {
-  if (typeof TM.createCreateMasterEditionV3Instruction === 'function') {
+  if (typeof TM.createCreateMasterEditionV3Instruction === "function") {
     return TM.createCreateMasterEditionV3Instruction(accounts, args);
   }
-  throw new Error('mpl-token-metadata: MasterEditionV3-Instruktion fehlt');
+  throw new Error("mpl-token-metadata: CreateMasterEditionV3 not available");
 }
 function tmVerifyCollectionInstr(obj) {
-  if (typeof TM.createSetAndVerifyCollectionInstruction === 'function') {
+  // prefer set+verify if available
+  if (typeof TM.createSetAndVerifyCollectionInstruction === "function") {
     return TM.createSetAndVerifyCollectionInstruction(obj);
   }
-  if (typeof TM.createVerifyCollectionInstruction === 'function') {
+  if (typeof TM.createVerifyCollectionInstruction === "function") {
     return TM.createVerifyCollectionInstruction(obj);
   }
   return null;
 }
 function tmUpdateMetadataV2Instr(accounts, args) {
-  if (typeof TM.createUpdateMetadataAccountV2Instruction === 'function') {
-    return TM.createUpdateMetadataAccountV2Instruction(accounts, { updateMetadataAccountArgsV2: args });
+  if (typeof TM.createUpdateMetadataAccountV2Instruction === "function") {
+    return TM.createUpdateMetadataAccountV2Instruction(accounts, {
+      updateMetadataAccountArgsV2: args,
+    });
   }
-  throw new Error('mpl-token-metadata: UpdateMetadataAccountV2 fehlt');
+  throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 not available");
 }
 function tmDeserializeMetadata(data) {
   if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
   if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
-  throw new Error('mpl-token-metadata: Metadata.deserialize nicht verfügbar');
+  throw new Error("mpl-token-metadata: Metadata.deserialize not available");
 }
 
-/* ==================== TM PROGRAM/PDAs ==================== */
+/* ========== PDAs ========== */
 const te = new TextEncoder();
 const findMetadataPda = (mint) =>
   PublicKey.findProgramAddressSync(
@@ -207,7 +201,8 @@ const findMasterEditionPda = (mint) =>
     [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
-
+  
+  
 /* ==================== FETCH-REWRITE (mainnet-beta → eigener RPC) ==================== */
 (function(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
