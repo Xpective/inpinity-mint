@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v18-esm";
+const BUILD_TAG = "mint-v19-esm-umd-fallback";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -32,7 +32,7 @@ const CFG = {
     const w = window;
     if (!w.ethereum) w.ethereum = {};
     if (typeof w.ethereum.setExternalProvider !== "function") {
-      w.ethereum.setExternalProvider = function(){ /* no-op */ };
+      w.ethereum.setExternalProvider = function(){};
     }
   } catch {}
 })();
@@ -54,66 +54,134 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* -------- Metaplex Token Metadata (ESM, dynamische Auswahl) -------- */
-import * as TMraw from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020&external=@solana/web3.js";
+/* ========= Metaplex TM Loader (ESM → UMD Fallback + Facade) ========= */
+let TM_FACADE = null;
 
-let TM = null; // Facade mit stabilen Funktionsnamen
+/** findet Funktionsnamen dynamisch (egal ob V2/V3/Legacy), gibt eine Facade zurück */
+function makeFacadeFromObj(src) {
+  if (!src) return null;
+  const keys = Object.keys(src);
 
-function pickInstructionSet(obj) {
-  if (!obj) return null;
-  const keys = Object.keys(obj);
+  // Hilfsfunktion: suche Key mit Regex, nimm „längsten/spezifischsten“
+  const findKey = (reArr) => {
+    const matches = keys.filter(k => reArr.some(re => re.test(k)));
+    if (!matches.length) return null;
+    // priorisiere längere Namen (meist V3)
+    return matches.sort((a,b) => b.length - a.length)[0];
+  };
 
-  // Kern-Instruktionen (Namensvarianten tolerant)
-  const metaKey    = keys.find(k => /^createCreateMetadataAccount.*Instruction$/.test(k));
-  const editionKey = keys.find(k => /^createCreateMasterEdition.*Instruction$/.test(k));
+  // Kandidaten-Pattern
+  const META_PAT = [
+    /^createCreateMetadataAccount.*Instruction$/,  // z.B. createCreateMetadataAccountV3Instruction
+    /^createMetadataAccount.*Instruction$/,        // falls anders benannt
+  ];
+  const EDITION_PAT = [
+    /^createCreateMasterEdition.*Instruction$/,    // z.B. createCreateMasterEditionV3Instruction
+    /^createMasterEdition.*Instruction$/,
+  ];
+  const VERIFY_SIZED_PAT = [/^createVerifySizedCollectionItemInstruction$/];
+  const SET_AND_VERIFY_SIZED_PAT = [/^createSetAndVerifySizedCollectionItemInstruction$/];
+  const VERIFY_LEGACY_PAT = [/^createVerifyCollectionInstruction$/];
+  const SET_AND_VERIFY_LEGACY_PAT = [/^createSetAndVerifyCollectionInstruction$/];
 
-  // Verifies (optional)
-  const sizedVerifyKey     = keys.find(k => /^createVerifySizedCollectionItemInstruction$/.test(k));
-  const sizedSetVerifyKey  = keys.find(k => /^createSetAndVerifySizedCollectionItemInstruction$/.test(k));
-  const legacyVerifyKey    = keys.find(k => /^createVerifyCollectionInstruction$/.test(k));
-  const legacySetVerifyKey = keys.find(k => /^createSetAndVerifyCollectionInstruction$/.test(k));
+  const metaKey    = findKey(META_PAT);
+  const editionKey = findKey(EDITION_PAT);
 
-  if (metaKey && editionKey) {
-    return {
-      createCreateMetadataAccount: obj[metaKey],
-      createCreateMasterEdition:   obj[editionKey],
-      createVerifySizedCollectionItem:        sizedVerifyKey    ? obj[sizedVerifyKey]    : undefined,
-      createSetAndVerifySizedCollectionItem:  sizedSetVerifyKey ? obj[sizedSetVerifyKey] : undefined,
-      createVerifyCollection:                 legacyVerifyKey    ? obj[legacyVerifyKey]   : undefined,
-      createSetAndVerifyCollection:           legacySetVerifyKey ? obj[legacySetVerifyKey]: undefined,
-      _metaKey: metaKey,
-      _editionKey: editionKey,
-    };
+  if (!(metaKey && editionKey)) return null;
+
+  return {
+    createCreateMetadataAccount: src[metaKey],
+    createCreateMasterEdition:   src[editionKey],
+    createVerifySizedCollectionItem:       src[findKey(VERIFY_SIZED_PAT)] || undefined,
+    createSetAndVerifySizedCollectionItem: src[findKey(SET_AND_VERIFY_SIZED_PAT)] || undefined,
+    createVerifyCollection:                src[findKey(VERIFY_LEGACY_PAT)] || undefined,
+    createSetAndVerifyCollection:          src[findKey(SET_AND_VERIFY_LEGACY_PAT)] || undefined,
+    _dbg: { metaKey, editionKey }
+  };
+}
+
+/** lädt UMD-Script dynamisch (probiert mehrere Dateinamen) und liefert window.mplTokenMetadata */
+async function loadUmdTM() {
+  const cdnBases = [
+    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/",
+    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/",
+  ];
+  const files = [
+    "index.umd.js",
+    "index.umd.cjs",
+    "index.browser.js",
+    "index.browser.cjs"
+  ];
+  for (const base of cdnBases) {
+    for (const f of files) {
+      const url = base + f;
+      try {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = url; s.async = true;
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error("load failed"));
+          document.head.appendChild(s);
+        });
+        if (window.mplTokenMetadata) {
+          console.log("[TM] UMD loaded:", url);
+          return window.mplTokenMetadata;
+        }
+      } catch {
+        // try next
+      }
+    }
   }
   return null;
 }
 
-function buildTmFacade() {
-  if (TM) return TM;
+/** Haupt-Loader: ESM versuchen → Facade; wenn keine Instruktions-Funktionen → UMD laden → Facade */
+async function getTokenMetadataFacade() {
+  if (TM_FACADE) return TM_FACADE;
 
-  // Mögliche „Wurzeln“ des Bundles durchprobieren
-  const candidates = [
-    TMraw?.default,
-    TMraw,
-    TMraw?.default?.mplTokenMetadata,
-    TMraw?.default?.metadata,
-    TMraw?.default?.programs?.metadata,
-    TMraw?.default?.TokenMetadataProgram,
-  ].filter(Boolean);
+  // 1) ESM importieren
+  let esmMod = null;
+  try {
+    const m = await import("https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020&external=@solana/web3.js");
+    // mögliche „Wurzeln“ durchsuchen
+    const candidates = [
+      m?.default,
+      m,
+      m?.default?.mplTokenMetadata,
+      m?.default?.metadata,
+      m?.default?.programs?.metadata,
+      m?.default?.TokenMetadataProgram
+    ].filter(Boolean);
 
-  for (const c of candidates) {
-    const picked = pickInstructionSet(c);
-    if (picked?.createCreateMetadataAccount && picked?.createCreateMasterEdition) {
-      console.log("[TM] OK – using keys:", { meta: picked._metaKey, edition: picked._editionKey });
-      TM = picked;
-      return TM;
+    for (const c of candidates) {
+      const facade = makeFacadeFromObj(c);
+      if (facade) {
+        console.log("[TM] ESM OK – using keys:", facade._dbg);
+        TM_FACADE = facade;
+        return TM_FACADE;
+      }
     }
+
+    // Debug: zeig die Exporte, damit wir sehen was drin ist
+    const dbg = m?.default ?? m ?? {};
+    console.warn("[TM] ESM exports:", Object.keys(dbg));
+  } catch (e) {
+    console.warn("[TM] ESM import failed:", e);
   }
 
-  // Debug-Ausgabe hilft beim nächsten Schritt, falls sich Namen ändern
-  const dbg = TMraw?.default ?? TMraw ?? {};
-  console.warn("[TM] Exports:", Object.keys(dbg));
-  throw new Error("Metaplex TM: passende Instruktions-Exporte nicht gefunden (Bundle-Variante).");
+  // 2) UMD nachladen
+  const umd = await loadUmdTM();
+  if (umd) {
+    const facade = makeFacadeFromObj(umd);
+    if (facade) {
+      console.log("[TM] UMD OK – using keys:", facade._dbg);
+      TM_FACADE = facade;
+      return TM_FACADE;
+    }
+    console.warn("[TM] UMD exports (no match):", Object.keys(umd || {}));
+  }
+
+  throw new Error("Metaplex TM: keine passenden Instruktions-Exporte gefunden (ESM/UMD).");
 }
 
 /* ==================== TM PROGRAM/PDAs ==================== */
@@ -147,7 +215,7 @@ const findMasterEditionPda = (mint) =>
   };
 })();
 
-/* ==================== HELPERS ==================== */
+/* ==================== HELPERS (unverändert) ==================== */
 const $ = (id)=>document.getElementById(id);
 const setStatus = (t, cls="")=>{
   const el = $("status"); if (!el) return;
@@ -213,7 +281,7 @@ async function connectPhantom(){
   try{
     const w=window.solana;
     if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
-    const resp=await w.connect(); // Popup
+    const resp=await w.connect();
     phantom=w;
 
     await ensureConnection();
@@ -247,7 +315,7 @@ async function updateBalance(){
   }
 }
 
-/* ==================== CLAIMS ==================== */
+/* ==================== CLAIMS (unverändert) ==================== */
 async function fetchClaims(){
   for (const url of CFG.CLAIMS){
     try{
@@ -305,7 +373,7 @@ async function safeMarkClaimed(i){
   await markClaimed(i);
 }
 
-/* ==================== IPFS Helpers ==================== */
+/* ==================== IPFS Helpers & Preview (unverändert) ==================== */
 const fetchWithTimeout = (u, ms=6000)=>Promise.race([
   fetch(u,{cache:"no-store"}),
   new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),ms))
@@ -322,8 +390,6 @@ async function fetchFirst(metaUrls){
     });
   });
 }
-
-/* ==================== PREVIEW ==================== */
 const previewCache={};
 async function updatePreview(){
   const clampId=(v)=>{ v=Number(v)||0; return Math.max(0, Math.min(CFG.MAX_INDEX, v)); };
@@ -376,7 +442,7 @@ function renderPreview(id, meta){
   metaBox.innerHTML=""; metaBox.appendChild(dl);
 }
 
-/* ==================== Collection-Checks ==================== */
+/* ==================== Collection-Checks (unverändert) ==================== */
 async function fetchAccountInfo(conn, pubkey){
   try{ return await conn.getAccountInfo(pubkey,"confirmed"); }catch{ return null; }
 }
@@ -392,7 +458,7 @@ async function softAssertCollection(conn, mint){
   catch(e){ log("Warnung: Collection-Preflight skipped", e?.message||String(e)); }
 }
 
-/* ==================== Priority Fee ==================== */
+/* ==================== Priority Fee (unverändert) ==================== */
 async function setSmartPriority(tx, conn){
   try{
     const res=await conn.getRecentPrioritizationFees?.({percentiles:[50,75,90]});
@@ -407,13 +473,13 @@ async function setSmartPriority(tx, conn){
   }
 }
 
-/* ==================== Sign & Send ==================== */
+/* ==================== Sign & Send (unverändert) ==================== */
 async function signSendWithRetry(conn, tx, wallet, extraSigner){
   if (extraSigner) tx.partialSign(extraSigner);
   for (let attempt=0; attempt<3; attempt++){
     const {blockhash,lastValidBlockHeight}=await conn.getLatestBlockhash();
     tx.recentBlockhash=blockhash; tx.feePayer=wallet.publicKey;
-    const signed=await wallet.signTransaction(tx); // <- Phantom Popup
+    const signed=await wallet.signTransaction(tx);
 
     const sim=await conn.simulateTransaction(signed,{sigVerify:false,commitment:"processed"});
     if (sim?.value?.logs) log("simulate logs", sim.value.logs);
@@ -440,7 +506,7 @@ async function doMint(){
     const lblEl=btn?.querySelector(".btn-label"); if (lblEl){ originalBtnText=lblEl.textContent; lblEl.textContent="Verarbeite..."; }
     setSpin(true);
 
-    const tm = buildTmFacade(); // stabile Funktionsnamen, egal ob V2/V3 im Bundle
+    const tm = await getTokenMetadataFacade();
 
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
     const idRaw=Number($("tokenId").value||0);
@@ -578,21 +644,18 @@ function handleError(context,e){
   log(`${context} ${msg}`);
 }
 
-/* ==================== UX Helpers ==================== */
+/* ==================== UX Helpers & Start ==================== */
 function applyMintButtonState(){
   const btn=$("mintBtn"); if (!btn) return;
   const ok=!!phantom?.publicKey && previewReady;
   btn.disabled=!ok;
 }
-
-/* ==================== UI WIRING ==================== */
 function wireUI(){
   $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
   $("randBtn")?.addEventListener("click", setRandomFreeId);
   $("tokenId")?.addEventListener("input", updatePreview);
 
-  // Donation-Pills
   const pills=Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer=$("customDonationContainer");
   const customInput=$("customDonationInput");
@@ -619,8 +682,6 @@ function wireUI(){
     if (/Instagram|FBAN|FBAV|Line\/|TikTok/i.test(ua)) setStatus("⚠️ Öffne diese Seite in einem externen Browser (Safari/Chrome) für Wallet-Popups.","warn");
   }catch{}
 }
-
-/* ==================== START ==================== */
 document.addEventListener("DOMContentLoaded", async ()=>{
   log("System boot",{build:BUILD_TAG,rpcs:CFG.RPCS});
   wireUI();
