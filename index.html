@@ -12,13 +12,20 @@
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
 
-  <!-- Styles -->
   <link rel="stylesheet" href="./styles.css?v=15" />
-  
-  <script src="https://api.inpinity.online/vendor/mpl-token-metadata-umd.js?v=3.4.0"></script>
 
-
-
+  <!-- EVM No-Op Shim: verhindert injected.bundle.js Fehler -->
+  <script>
+    (function(){
+      try {
+        const w = window;
+        if (!w.ethereum) w.ethereum = {};
+        if (typeof w.ethereum.setExternalProvider !== "function") {
+          Object.defineProperty(w.ethereum, "setExternalProvider", { value: function(){}, configurable:true });
+        }
+      } catch {}
+    })();
+  </script>
 </head>
 <body>
   <header class="site-header">
@@ -40,13 +47,10 @@
     </div>
   </header>
 
-  <noscript>
-    <div class="noscript">Bitte JavaScript aktivieren – sonst kann nicht gemintet werden.</div>
-  </noscript>
+  <noscript><div class="noscript">Bitte JavaScript aktivieren – sonst kann nicht gemintet werden.</div></noscript>
 
   <main class="container">
     <div class="grid">
-      <!-- Preview -->
       <div class="card">
         <div class="media" id="mediaBox"><span class="muted">Noch keine Vorschau…</span></div>
         <div class="card-body">
@@ -61,16 +65,13 @@
         </div>
       </div>
 
-      <!-- Mint -->
       <div class="card">
         <div class="card-body">
           <div class="h3">Mint</div>
           <p class="small">Fixe Creator-Fee: <strong>0.02 SOL</strong>. Optional kannst du zusätzlich spenden.</p>
 
           <div id="donationOptions" class="donation-bar">
-            <label class="pill active">
-              <input type="radio" name="donation" value="0" checked hidden /> 0 SOL
-            </label>
+            <label class="pill active"><input type="radio" name="donation" value="0" checked hidden /> 0 SOL</label>
             <label class="pill"><input type="radio" name="donation" value="0.01" hidden /> 0.01 SOL</label>
             <label class="pill"><input type="radio" name="donation" value="0.10" hidden /> 0.10 SOL</label>
             <label class="pill"><input type="radio" name="donation" value="1" hidden /> 1 SOL</label>
@@ -96,18 +97,9 @@
 
     <section class="info">
       <div class="info-grid">
-        <div class="info-card">
-          <div class="h4">Transparenz</div>
-          <p class="small">Free mint + optional Donation. Nur 0.02 SOL Creator-Fee; Royalties 7%.</p>
-        </div>
-        <div class="info-card">
-          <div class="h4">Sammlung</div>
-          <p class="small">10.000 NFTs (#0–#9999). Jede Nummer wird beim Mint gesperrt (no double-mint).</p>
-        </div>
-        <div class="info-card">
-          <div class="h4">On-Chain</div>
-          <p class="small">Umi + Token Metadata v3. Compute-Budget & Retry via Worker.</p>
-        </div>
+        <div class="info-card"><div class="h4">Transparenz</div><p class="small">Free mint + optional Donation. Nur 0.02 SOL Creator-Fee; Royalties 7%.</p></div>
+        <div class="info-card"><div class="h4">Sammlung</div><p class="small">10.000 NFTs (#0–#9999). Jede Nummer wird beim Mint gesperrt (no double-mint).</p></div>
+        <div class="info-card"><div class="h4">On-Chain</div><p class="small">Umi + Token Metadata v3. Compute-Budget & Retry via Worker.</p></div>
       </div>
     </section>
 
@@ -119,30 +111,7 @@
     </footer>
   </main>
 
-  <!-- Lade Metaplex TM (UMD) ohne CORS-Ärger -->
-  <script>
-  (function evmNoopShim(){
-    try {
-      const w = window;
-      if (!w.ethereum) w.ethereum = {};
-      if (typeof w.ethereum.setExternalProvider !== "function") {
-        Object.defineProperty(w.ethereum, "setExternalProvider", {
-          value: function(){ /* no-op */ },
-          writable: false,
-          configurable: true
-        });
-      }
-    } catch {}
-  })();
-  </script>
-  
-  <script src="https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js"
-        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-
-
-<!-- danach dein App-Module -->
-  <script type="module" src="/app.js?v=17">
-  </script>
-
+  <!-- Deine App -->
+  <script type="module" src="/app.js?v=18"></script>
 </body>
 </html>
