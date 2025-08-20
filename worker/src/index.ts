@@ -181,7 +181,20 @@ export default {
       }
       return text('vendor fetch failed', origin, 502);
     }
-
+    if (url.pathname === '/vendor/web3js.js') {
+  const srcs = [
+    'https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js',
+    'https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.min.js',
+  ];
+  // ... analog zum vorhandenen vendor-Block
+    }
+    if (url.pathname === '/vendor/spl-token.js') {
+      const srcs = [
+        'https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.9/dist/index.iife.js',
+        'https://unpkg.com/@solana/spl-token@0.4.9/dist/index.iife.js',
+      ];
+      // ... analog
+    }
     /* -------- JSON-RPC proxy -------- */
     if (url.pathname === '/rpc' && req.method === 'POST') {
       let body: any;
