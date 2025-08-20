@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v21";
+const BUILD_TAG = "mint-v22";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -49,36 +49,79 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TM v1 (ESM) ==================== */
-import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@1.13.0?target=es2020&bundle";
+/* ==================== METAPLEX TOKEN METADATA via UMD (aus DEINEM Worker) ==================== */
+/*  WICHTIG:
+    - Entfernt deinen alten Import von esm.sh für mpl-token-metadata (der 404 machte).
+    - Lädt den UMD-Build einmalig und stellt Wrapper bereit, die mit V2/V3 funktionieren. */
+let TM = null;
+let TM_PROGRAM_ID_V1 = null;
+let TOKEN_METADATA_PROGRAM_ID = null;
 
-const {
-  PROGRAM_ID: TM_PROGRAM_ID_V1,
-  createCreateMetadataAccountV2Instruction,
-  createCreateMasterEditionV3Instruction,
-  createVerifyCollectionInstruction,
-  createSetAndVerifyCollectionInstruction,
-  createUpdateMetadataAccountV2Instruction, // Update/Repair & Update-Authority ändern
-  Metadata
-} = tm;
+async function loadTM() {
+  if (TM) return TM;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://api.inpinity.online/vendor/mpl-token-metadata-umd.js';
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('mpl-token-metadata UMD konnte nicht geladen werden'));
+    document.head.appendChild(s);
+  });
+  TM = window.mpl_token_metadata || window.mplTokenMetadata || (window.metaplex && window.metaplex.mplTokenMetadata);
+  if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
+  TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
+  TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+  return TM;
+}
+async function ensureTM(){ return loadTM(); }
 
-/* Sanity-Check */
-(function(){
-  const okCreate = typeof createCreateMetadataAccountV2Instruction === "function"
-                && typeof createCreateMasterEditionV3Instruction === "function";
-  if (!okCreate) throw new Error("Metaplex TM v1 (ESM): Instruktions-Exporte fehlen.");
-})();
+function tmCreateMetadataInstr(accounts, dataV2Like) {
+  if (typeof TM.createCreateMetadataAccountV2Instruction === 'function') {
+    return TM.createCreateMetadataAccountV2Instruction(accounts, {
+      createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true }
+    });
+  }
+  if (typeof TM.createCreateMetadataAccountV3Instruction === 'function') {
+    return TM.createCreateMetadataAccountV3Instruction(accounts, {
+      createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null }
+    });
+  }
+  throw new Error('mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar');
+}
+function tmMasterEditionV3Instr(accounts, args) {
+  if (typeof TM.createCreateMasterEditionV3Instruction === 'function') {
+    return TM.createCreateMasterEditionV3Instruction(accounts, args);
+  }
+  throw new Error('mpl-token-metadata: MasterEditionV3-Instruktion fehlt');
+}
+function tmVerifyCollectionInstr(obj) {
+  if (typeof TM.createSetAndVerifyCollectionInstruction === 'function') {
+    return TM.createSetAndVerifyCollectionInstruction(obj);
+  }
+  if (typeof TM.createVerifyCollectionInstruction === 'function') {
+    return TM.createVerifyCollectionInstruction(obj);
+  }
+  return null; // im Zweifel einfach ohne Verify fortfahren
+}
+function tmUpdateMetadataV2Instr(accounts, args) {
+  if (typeof TM.createUpdateMetadataAccountV2Instruction === 'function') {
+    return TM.createUpdateMetadataAccountV2Instruction(accounts, { updateMetadataAccountArgsV2: args });
+  }
+  throw new Error('mpl-token-metadata: UpdateMetadataAccountV2 fehlt');
+}
+function tmDeserializeMetadata(data) {
+  if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
+  if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
+  throw new Error('mpl-token-metadata: Metadata.deserialize nicht verfügbar');
+}
 
 /* ==================== TM PROGRAM/PDAs ==================== */
 const te = new TextEncoder();
-const TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
-
 const findMetadataPda = (mint) =>
   PublicKey.findProgramAddressSync(
     [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
-
 const findMasterEditionPda = (mint) =>
   PublicKey.findProgramAddressSync(
     [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
@@ -321,6 +364,7 @@ async function fetchAccountInfo(conn, pubkey){
   try{ return await conn.getAccountInfo(pubkey,"confirmed"); }catch{ return null; }
 }
 async function assertCanVerifyCollection(conn, payer, collectionMint){
+  await ensureTM();
   const collMd=findMetadataPda(collectionMint);
   const collEd=findMasterEditionPda(collectionMint);
   const [mdAcc, edAcc]=await Promise.all([ fetchAccountInfo(conn,collMd), fetchAccountInfo(conn,collEd) ]);
@@ -374,6 +418,7 @@ async function signSendWithRetry(conn, tx, wallet, extraSigner){
 
 /* ==================== REPAIR: bestehendes NFT suchen & fixen ==================== */
 async function findExistingMintByIdForCreator(conn, id){
+  await ensureTM();
   const owner = new PublicKey(CFG.CREATOR);
   const parsed = await conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID });
   const candidates = parsed.value
@@ -390,7 +435,7 @@ async function findExistingMintByIdForCreator(conn, id){
       const metaPda = findMetadataPda(mint);
       const acc = await conn.getAccountInfo(metaPda, "confirmed");
       if (!acc) continue;
-      const md = Metadata.deserialize(acc.data)[0];
+      const md = tmDeserializeMetadata(acc.data);
 
       const gotName = (md.data?.name || "").trim();
       const gotUri  = (md.data?.uri  || "").trim();
@@ -414,6 +459,7 @@ function buildDesiredDataV2(id){
 }
 
 async function ensureMetadataAndCollection(conn, payer, mint, id){
+  await ensureTM();
   const tx = new Transaction();
   await setSmartPriority(tx, conn);
 
@@ -424,7 +470,7 @@ async function ensureMetadataAndCollection(conn, payer, mint, id){
   const acc = await conn.getAccountInfo(metadataPda, "confirmed");
   if (!acc) throw new Error("Metadata PDA nicht gefunden");
 
-  const md = Metadata.deserialize(acc.data)[0];
+  const md = tmDeserializeMetadata(acc.data);
 
   const want = buildDesiredDataV2(id);
   const needUpdate =
@@ -435,41 +481,28 @@ async function ensureMetadataAndCollection(conn, payer, mint, id){
    || !md.data?.creators?.[0]?.address?.equals?.(new PublicKey(CFG.CREATOR))
    || (md.data?.creators?.[0]?.share ?? 0)!==100;
 
-  if (needUpdate && typeof createUpdateMetadataAccountV2Instruction === "function"){
-    tx.add(createUpdateMetadataAccountV2Instruction(
+  if (needUpdate){
+    tx.add(tmUpdateMetadataV2Instr(
       { metadata: metadataPda, updateAuthority: payer },
-      { updateMetadataAccountArgsV2: {
-          data: want,
-          updateAuthority: payer,
-          primarySaleHappened: md.primarySaleHappened ?? null,
-          isMutable: md.isMutable ?? true
-        } }
+      {
+        data: want,
+        updateAuthority: payer,
+        primarySaleHappened: md.primarySaleHappened ?? null,
+        isMutable: md.isMutable ?? true
+      }
     ));
   }
 
-  const canSetAndVerify = typeof createSetAndVerifyCollectionInstruction === "function";
-  const canVerify       = typeof createVerifyCollectionInstruction === "function";
-
-  if (canSetAndVerify){
-    tx.add(createSetAndVerifyCollectionInstruction({
-      metadata: metadataPda,
-      collectionAuthority: payer,
-      payer,
-      updateAuthority: payer,
-      collectionMint: new PublicKey(CFG.COLLECTION_MINT),
-      collection: collMdPda,
-      collectionMasterEditionAccount: collEdPda
-    }));
-  } else if (canVerify){
-    tx.add(createVerifyCollectionInstruction({
-      metadata: metadataPda,
-      collectionAuthority: payer,
-      payer,
-      collectionMint: new PublicKey(CFG.COLLECTION_MINT),
-      collection: collMdPda,
-      collectionMasterEditionAccount: collEdPda
-    }));
-  }
+  const verifyInstr = tmVerifyCollectionInstr({
+    metadata: metadataPda,
+    collectionAuthority: payer,
+    payer,
+    updateAuthority: payer,
+    collectionMint: new PublicKey(CFG.COLLECTION_MINT),
+    collection: collMdPda,
+    collectionMasterEditionAccount: collEdPda
+  });
+  if (verifyInstr) tx.add(verifyInstr);
 
   const sig=await signSendWithRetry(conn, tx, phantom);
   log("repair ok",{signature:sig, mint: mint.toBase58()});
@@ -497,6 +530,7 @@ async function doMint(){
     const donationLamports=Math.round(donation*1e9);
 
     const conn=await ensureConnection();
+    await ensureTM(); // <<< WICHTIG: bevor PDAs/Instruktionen genutzt werden
     const wallet=phantom; const payer=wallet.publicKey;
     const collectionMint=new PublicKey(CFG.COLLECTION_MINT);
     const creatorPk=new PublicKey(CFG.CREATOR);
@@ -546,67 +580,43 @@ async function doMint(){
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
-    // v1: Create Metadata (DataV2)
-    tx.add(createCreateMetadataAccountV2Instruction(
+    // Create Metadata (v2/v3 Wrapper)
+    tx.add(tmCreateMetadataInstr(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
-      { createMetadataAccountArgsV2:{
-          data:{
-            name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
-            creators:[{ address:creatorPk, verified:isSelf, share:100 }],
-            collection:{ key:collectionMint, verified:false },
-            uses:null
-          },
-          isMutable:true
-        }
+      {
+        name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
+        creators:[{ address:creatorPk, verified:isSelf, share:100 }],
+        collection:{ key:collectionMint, verified:false },
+        uses:null
       }
     ));
 
-    // v1: Master Edition V3
-    tx.add(createCreateMasterEditionV3Instruction(
+    // Master Edition V3
+    tx.add(tmMasterEditionV3Instr(
       { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
       { createMasterEditionArgs:{ maxSupply:0 } }
     ));
 
-    // === WICHTIG: Bei Fremd-Mint Update Authority -> CREATOR umstellen
-    if (!isSelf && typeof createUpdateMetadataAccountV2Instruction === "function") {
-      tx.add(createUpdateMetadataAccountV2Instruction(
-        { metadata: metadataPda, updateAuthority: payer }, // aktueller Update-Auth = Minter
-        { updateMetadataAccountArgsV2: {
-            data: null,                 // Daten nicht ändern
-            updateAuthority: creatorPk, // Neue Update Authority = Creator
-            primarySaleHappened: null,
-            isMutable: true
-          } }
+    // Bei Fremd-Mint: Update-Authority → CREATOR
+    if (!isSelf){
+      tx.add(tmUpdateMetadataV2Instr(
+        { metadata: metadataPda, updateAuthority: payer },
+        { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
       ));
     }
 
-    // v1: Collection verify (nur wenn Creator selbst mintet)
-    const collMdPda=findMetadataPda(collectionMint);
-    const collEdPda=findMasterEditionPda(collectionMint);
-    const canVerify = typeof createVerifyCollectionInstruction === "function";
-    const canSetAndVerify = typeof createSetAndVerifyCollectionInstruction === "function";
-
+    // Collection verify (nur wenn Creator selbst mintet)
     if (isSelf){
-      if (canVerify) {
-        tx.add(createVerifyCollectionInstruction({
-          metadata: metadataPda,
-          collectionAuthority: payer,
-          payer,
-          collectionMint,
-          collection: collMdPda,
-          collectionMasterEditionAccount: collEdPda
-        }));
-      } else if (canSetAndVerify) {
-        tx.add(createSetAndVerifyCollectionInstruction({
-          metadata: metadataPda,
-          collectionAuthority: payer,
-          payer,
-          updateAuthority: payer,
-          collectionMint,
-          collection: collMdPda,
-          collectionMasterEditionAccount: collEdPda
-        }));
-      }
+      const instr = tmVerifyCollectionInstr({
+        metadata: metadataPda,
+        collectionAuthority: payer,
+        payer,
+        updateAuthority: payer,
+        collectionMint,
+        collection: findMetadataPda(collectionMint),
+        collectionMasterEditionAccount: findMasterEditionPda(collectionMint)
+      });
+      if (instr) tx.add(instr);
     }
 
     setStatus("Bitte im Wallet signieren…","info");
@@ -661,10 +671,7 @@ function applyMintButtonState(){
 function wireUI(){
   $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
-
-  // Button „freie Nummer finden“ → jetzt: nächste freie Nummer setzen
   $("randBtn")?.addEventListener("click", setNextFreeId);
-
   $("tokenId")?.addEventListener("input", updatePreview);
 
   // Donation-Pills
