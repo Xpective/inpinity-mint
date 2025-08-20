@@ -54,50 +54,76 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ========= Metaplex TM Loader (ESM → UMD Fallback + Facade) ========= */
-let TM_FACADE = null;
+/* ========= Metaplex TM Loader: erzwinge UMD v2.x (Web3.js Instruktions-API) ========= */
+let TM = null;
 
-/** findet Funktionsnamen dynamisch (egal ob V2/V3/Legacy), gibt eine Facade zurück */
-function makeFacadeFromObj(src) {
-  if (!src) return null;
-  const keys = Object.keys(src);
+// Bekannte UMD-Dateien (v2.x hat die Instruction-Funktionen)
+const TM_CDNS = [
+  "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@2.10.6/dist/",
+  "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@2.10.6/dist/",
+];
+const TM_FILES = [
+  "index.umd.js",
+  "index.umd.cjs",
+  "index.browser.js",
+  "index.browser.cjs",
+];
 
-  // Hilfsfunktion: suche Key mit Regex, nimm „längsten/spezifischsten“
-  const findKey = (reArr) => {
-    const matches = keys.filter(k => reArr.some(re => re.test(k)));
-    if (!matches.length) return null;
-    // priorisiere längere Namen (meist V3)
-    return matches.sort((a,b) => b.length - a.length)[0];
-  };
+function hasInstructionApi(obj) {
+  return obj
+    && typeof obj.createCreateMetadataAccountV3Instruction === "function"
+    && typeof obj.createCreateMasterEditionV3Instruction === "function";
+}
 
-  // Kandidaten-Pattern
-  const META_PAT = [
-    /^createCreateMetadataAccount.*Instruction$/,  // z.B. createCreateMetadataAccountV3Instruction
-    /^createMetadataAccount.*Instruction$/,        // falls anders benannt
-  ];
-  const EDITION_PAT = [
-    /^createCreateMasterEdition.*Instruction$/,    // z.B. createCreateMasterEditionV3Instruction
-    /^createMasterEdition.*Instruction$/,
-  ];
-  const VERIFY_SIZED_PAT = [/^createVerifySizedCollectionItemInstruction$/];
-  const SET_AND_VERIFY_SIZED_PAT = [/^createSetAndVerifySizedCollectionItemInstruction$/];
-  const VERIFY_LEGACY_PAT = [/^createVerifyCollectionInstruction$/];
-  const SET_AND_VERIFY_LEGACY_PAT = [/^createSetAndVerifyCollectionInstruction$/];
+async function loadUmd(url) {
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = url;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("UMD load failed: " + url));
+    document.head.appendChild(s);
+  });
+  return window.mplTokenMetadata || null;
+}
 
-  const metaKey    = findKey(META_PAT);
-  const editionKey = findKey(EDITION_PAT);
+async function ensureTM() {
+  if (TM) return TM;
 
-  if (!(metaKey && editionKey)) return null;
+  // 1) Falls jemand trotzdem schon ein UMD geladen hat, nutze es.
+  if (hasInstructionApi(window.mplTokenMetadata)) {
+    TM = window.mplTokenMetadata;
+    console.log("[TM] Using preloaded UMD");
+    return TM;
+  }
 
-  return {
-    createCreateMetadataAccount: src[metaKey],
-    createCreateMasterEdition:   src[editionKey],
-    createVerifySizedCollectionItem:       src[findKey(VERIFY_SIZED_PAT)] || undefined,
-    createSetAndVerifySizedCollectionItem: src[findKey(SET_AND_VERIFY_SIZED_PAT)] || undefined,
-    createVerifyCollection:                src[findKey(VERIFY_LEGACY_PAT)] || undefined,
-    createSetAndVerifyCollection:          src[findKey(SET_AND_VERIFY_LEGACY_PAT)] || undefined,
-    _dbg: { metaKey, editionKey }
-  };
+  // 2) Lade gezielt v2.x von CDN (mehrere Dateinamen probieren).
+  let lastErr = null;
+  for (const base of TM_CDNS) {
+    for (const file of TM_FILES) {
+      const url = base + file;
+      try {
+        const mod = await loadUmd(url);
+        if (hasInstructionApi(mod)) {
+          TM = mod;
+          console.log("[TM] UMD OK:", url);
+          return TM;
+        } else if (mod) {
+          console.warn("[TM] UMD loaded but no Instruction API:", url, Object.keys(mod));
+          lastErr = new Error("No Instruction API in " + url);
+        }
+      } catch (e) {
+        lastErr = e;
+        // next candidate
+      }
+    }
+  }
+
+  // 3) Abbruch mit klarer Meldung
+  throw new Error(
+    "Metaplex TM: keine passende Web3.js-Instruktions-API gefunden. " +
+    "Pin auf v2.x fehlgeschlagen. Letzter Fehler: " + (lastErr?.message || lastErr)
+  );
 }
 
 /** lädt UMD-Script dynamisch (probiert mehrere Dateinamen) und liefert window.mplTokenMetadata */
@@ -506,7 +532,7 @@ async function doMint(){
     const lblEl=btn?.querySelector(".btn-label"); if (lblEl){ originalBtnText=lblEl.textContent; lblEl.textContent="Verarbeite..."; }
     setSpin(true);
 
-    const tm = await getTokenMetadataFacade();
+    const tm = await ensureTM();
 
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
     const idRaw=Number($("tokenId").value||0);
