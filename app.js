@@ -54,8 +54,14 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?target=es2020&bundle";
+import TMmod from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020";
+const tm = TMmod?.default ?? TMmod;
 
+// (optional) Sanity-Check – einmalig beim Laden:
+if (typeof tm.createCreateMetadataAccountV3Instruction !== "function") {
+  console.warn("[TM] Exports:", Object.keys(tm));
+  throw new Error("Metaplex TM: Export createCreateMetadataAccountV3Instruction fehlt (Check bundling).");
+}
 /* ==================== TM PROGRAM/PDAs ==================== */
 const te = new TextEncoder();
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
