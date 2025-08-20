@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v20-esm-only";
+const BUILD_TAG = "mint-v20-mpl-v1-esm";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -11,20 +11,38 @@ const CFG = {
     "https://api.inpinity.online/claims",
     "https://inpinity-rpc-proxy.s-plat.workers.dev/claims",
   ],
+
   CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   MINT_FEE_SOL: 0.02,
   COLLECTION_MINT: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
+
   ROYALTY_BPS: 700,
   MAX_INDEX: 9999,
+
   JSON_BASE_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
+
   GATEWAYS: [
     "https://ipfs.io/ipfs",
     "https://cloudflare-ipfs.com/ipfs",
     "https://ipfs.inpinity.online/ipfs"
   ],
 };
+
+/* ==================== EVM NO-OP SHIM (gegen fremde EVM-Injections) ==================== */
+(function(){
+  try {
+    const w = window;
+    if (!w.ethereum) w.ethereum = {};
+    if (typeof w.ethereum.setExternalProvider !== "function") {
+      w.ethereum.setExternalProvider = function(){};
+    }
+    if (typeof w.ethereum.initializeProvider !== "function") {
+      w.ethereum.initializeProvider = function(){};
+    }
+  } catch {}
+})();
 
 /* ==================== Imports (ESM) ==================== */
 import {
@@ -43,50 +61,48 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* >>>>>>> Metaplex TM v2.x — reine ESM Named-Imports (CSP-safe) <<<<<<< */
+/* >>>>>>> Metaplex Token Metadata v1.x (ESM only) <<<<<<< */
 import {
-  // Programm-ID optional, wir berechnen PDAs selbst
-  createCreateMetadataAccountV3Instruction,
+  PROGRAM_ID as TOKEN_METADATA_PROGRAM_ID_V1,
+  // v1 Data + Instruktionen
+  createCreateMetadataAccountV2Instruction,
   createCreateMasterEditionV3Instruction,
-  // wir prüfen zur Laufzeit welche Verify-Variante verfügbar ist
-  createVerifySizedCollectionItemInstruction,
-  createSetAndVerifySizedCollectionItemInstruction,
   createVerifyCollectionInstruction,
   createSetAndVerifyCollectionInstruction,
-} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.10.6?target=es2020&bundle";
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@1.13.0?target=es2020&bundle";
 
 /* ==================== TM PROGRAM/PDAs ==================== */
 const te = new TextEncoder();
-const TOKEN_METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+const TOKEN_METADATA_PROGRAM_ID = new PublicKey(TOKEN_METADATA_PROGRAM_ID_V1.toString());
+
 const findMetadataPda = (mint) =>
   PublicKey.findProgramAddressSync(
     [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
+
 const findMasterEditionPda = (mint) =>
   PublicKey.findProgramAddressSync(
     [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
 
-/* Sanity-Check: stellen sicher, dass die Instruktionsfunktionen existieren */
+/* Sanity-Check: v1-Instruktionen vorhanden? */
 (function(){
-  const ok = typeof createCreateMetadataAccountV3Instruction === "function"
+  const ok = typeof createCreateMetadataAccountV2Instruction === "function"
           && typeof createCreateMasterEditionV3Instruction === "function";
   if (!ok) {
-    console.warn("[TM] Named exports:", {
-      createCreateMetadataAccountV3Instruction: typeof createCreateMetadataAccountV3Instruction,
+    console.warn("[TM v1] Export-Check:", {
+      createCreateMetadataAccountV2Instruction: typeof createCreateMetadataAccountV2Instruction,
       createCreateMasterEditionV3Instruction: typeof createCreateMasterEditionV3Instruction,
-      createVerifySizedCollectionItemInstruction: typeof createVerifySizedCollectionItemInstruction,
-      createSetAndVerifySizedCollectionItemInstruction: typeof createSetAndVerifySizedCollectionItemInstruction,
       createVerifyCollectionInstruction: typeof createVerifyCollectionInstruction,
       createSetAndVerifyCollectionInstruction: typeof createSetAndVerifyCollectionInstruction,
     });
-    throw new Error("Metaplex TM (v2.x ESM): Instruktions-Exporte fehlen (CSP-safe).");
+    throw new Error("Metaplex TM v1 (ESM): Instruktions-Exporte fehlen.");
   }
 })();
 
-/* ==================== FETCH-REWRITE ==================== */
+/* ==================== FETCH-REWRITE (mainnet-beta → eigener RPC) ==================== */
 (function(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
   const TARGET  = CFG.RPCS[0];
@@ -169,7 +185,7 @@ async function connectPhantom(){
   try{
     const w=window.solana;
     if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
-    const resp=await w.connect();
+    const resp=await w.connect(); // Popup
     phantom=w;
 
     await ensureConnection();
@@ -369,7 +385,7 @@ async function signSendWithRetry(conn, tx, wallet, extraSigner){
   for (let attempt=0; attempt<3; attempt++){
     const {blockhash,lastValidBlockHeight}=await conn.getLatestBlockhash();
     tx.recentBlockhash=blockhash; tx.feePayer=wallet.publicKey;
-    const signed=await wallet.signTransaction(tx);
+    const signed=await wallet.signTransaction(tx); // Phantom Popup
 
     const sim=await conn.simulateTransaction(signed,{sigVerify:false,commitment:"processed"});
     if (sim?.value?.logs) log("simulate logs", sim.value.logs);
@@ -422,10 +438,12 @@ async function doMint(){
     const tx=new Transaction();
     await setSmartPriority(tx, conn);
 
+    // Creator-Fee + optional Donation
     const feeLamports=isSelf?0:Math.round(CFG.MINT_FEE_SOL*1e9);
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
 
+    // Mint Account + init + ATA + mint 1
     const rentLamports=await getMinimumBalanceForRentExemptMint(conn);
     tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
     tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
@@ -436,59 +454,62 @@ async function doMint(){
 
     tx.add(createMintToInstruction(mint,ata,payer,1));
 
+    // PDAs für das neue NFT
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
-    tx.add(createCreateMetadataAccountV3Instruction(
+    // v1: Create Metadata (DataV2)
+    tx.add(createCreateMetadataAccountV2Instruction(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
-      { createMetadataAccountArgsV3:{
+      { createMetadataAccountArgsV2:{
           data:{
             name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
-            creators:[{address:creatorPk,verified:isSelf,share:100}],
-            collection:{key:collectionMint,verified:false}, uses:null
+            creators:[{ address:creatorPk, verified:isSelf, share:100 }],
+            collection:{ key:collectionMint, verified:false },
+            uses:null
           },
-          isMutable:true, collectionDetails:null
+          isMutable:true
         }
       }
     ));
 
+    // v1: Master Edition V3
     tx.add(createCreateMasterEditionV3Instruction(
       { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
       { createMasterEditionArgs:{ maxSupply:0 } }
     ));
 
-    // Collection verify (wenn Creator == Payer)
+    // v1: Collection verify (Legacy)
     if (isSelf){
       const collMdPda=findMetadataPda(collectionMint);
       const collEdPda=findMasterEditionPda(collectionMint);
 
-      const canSized = typeof createVerifySizedCollectionItemInstruction === "function";
-      const canSizedSet = typeof createSetAndVerifySizedCollectionItemInstruction === "function";
-      const canLegacy = typeof createVerifyCollectionInstruction === "function";
-      const canLegacySet = typeof createSetAndVerifyCollectionInstruction === "function";
+      // je nach verfügbarer API:
+      const canVerify = typeof createVerifyCollectionInstruction === "function";
+      const canSetAndVerify = typeof createSetAndVerifyCollectionInstruction === "function";
 
-      if (canSized) {
-        tx.add(createVerifySizedCollectionItemInstruction({
-          metadata:metadataPda, collectionAuthority:payer, payer,
-          collectionMint, collection:collMdPda, collectionMasterEditionAccount:collEdPda
-        }));
-      } else if (canSizedSet) {
-        tx.add(createSetAndVerifySizedCollectionItemInstruction({
-          metadata:metadataPda, collectionAuthority:payer, payer,
-          collectionMint, collection:collMdPda, collectionMasterEditionAccount:collEdPda
-        }));
-      } else if (canLegacy) {
+      if (canVerify) {
+        // benötigt i.d.R. collectionMasterEditionAccount
         tx.add(createVerifyCollectionInstruction({
-          metadata:metadataPda, collectionAuthority:payer, payer,
-          collectionMint, collection:collMdPda
+          metadata: metadataPda,
+          collectionAuthority: payer,
+          payer,
+          collectionMint,
+          collection: collMdPda,
+          collectionMasterEditionAccount: collEdPda
         }));
-      } else if (canLegacySet) {
+      } else if (canSetAndVerify) {
         tx.add(createSetAndVerifyCollectionInstruction({
-          metadata:metadataPda, collectionAuthority:payer, payer,
-          collectionMint, collection:collMdPda
+          metadata: metadataPda,
+          collectionAuthority: payer,
+          payer,
+          updateAuthority: payer, // einige v1 builds erwarten diesen zusätzlichen Account
+          collectionMint,
+          collection: collMdPda,
+          collectionMasterEditionAccount: collEdPda
         }));
       } else {
-        console.warn("[TM] Keine passende Verify-Instruction im Modul gefunden.");
+        console.warn("[TM v1] Keine Legacy-Verify-Instruktion gefunden – überspringe Verify.");
       }
     }
 
@@ -523,7 +544,6 @@ function userFriendly(msg){
   if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
   if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
   if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
-  if (/Metaplex TM.*Instruktions-Exporte fehlen/i.test(msg)) return "TM-Library (ESM v2.x) nicht korrekt geladen.";
   return msg;
 }
 function handleError(context,e){
