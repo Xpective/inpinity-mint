@@ -120,19 +120,26 @@ async function loadTM() {
   }
 
   // 2) Fallback: Worker-Vendor aus KV (stabil, keine CDNs)
-  const workerCandidates = [
-    `https://api.inpinity.online/vendor/mpl-token-metadata-umd.js?v=${encodeURIComponent(BUILD_TAG)}`,
-    `https://inpi-proxy-nft.s-plat.workers.dev/vendor/mpl-token-metadata-umd.js?v=${encodeURIComponent(BUILD_TAG)}`
-  ];
+  // ...
+for (const u of workerCandidates) {
+  try {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = u;
+      s.async = true;
+      s.type = 'module';              // <<< WICHTIG: Modul, weil Shim 'import' benutzt
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`script load failed: ${u}`));
+      document.head.appendChild(s);
+    });
 
-  const used = await loadScriptFromList(workerCandidates);
+    TM = window.mpl_token_metadata
+      || window.mplTokenMetadata
+      || (window.metaplex && window.metaplex.mplTokenMetadata);
 
-  TM = window.mpl_token_metadata
-    || window.mplTokenMetadata
-    || (window.metaplex && window.metaplex.mplTokenMetadata);
+    if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
 
-  if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
-
+    // ... (Rest wie gehabt)
   TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
   TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
 
