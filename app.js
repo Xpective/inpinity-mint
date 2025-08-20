@@ -1,5 +1,5 @@
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v19-esm-umd-fallback";
+const BUILD_TAG = "mint-v20-esm-only";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -26,18 +26,7 @@ const CFG = {
   ],
 };
 
-/* ==================== EVM NO-OP SHIM ==================== */
-(function(){
-  try {
-    const w = window;
-    if (!w.ethereum) w.ethereum = {};
-    if (typeof w.ethereum.setExternalProvider !== "function") {
-      w.ethereum.setExternalProvider = function(){};
-    }
-  } catch {}
-})();
-
-/* ==================== IMPORTS (ESM) ==================== */
+/* ==================== Imports (ESM) ==================== */
 import {
   Connection, PublicKey, Transaction, SystemProgram,
   Keypair, ComputeBudgetProgram
@@ -54,145 +43,17 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ========= Metaplex Token Metadata (CSP-sicher, ESM v2.x) =========
-   Ziel: Web3.js-Instruktionsfunktionen wie
-   - createCreateMetadataAccountV3Instruction
-   - createCreateMasterEditionV3Instruction
-   … ohne UMD, ohne eval, ohne UMI/Builder.
-*/
-let tm = null;
-
-function hasInstrAPI(m) {
-  return m
-    && typeof m.createCreateMetadataAccountV3Instruction === "function"
-    && typeof m.createCreateMasterEditionV3Instruction === "function";
-}
-
-// Kandidaten: v2.x als ESM von esm.sh (CSP-freundlich, keine eval)
-const TM_ESM_URLS = [
-  "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.10.6?bundle&target=es2020",
-  "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1?bundle&target=es2020",
-];
-
-async function ensureTM() {
-  if (tm) return tm;
-
-  let lastErr = null;
-  for (const url of TM_ESM_URLS) {
-    try {
-      // dynamischer ESM-Import ist CSP-kompatibel, solange das Bundle selbst kein eval nutzt
-      const mod = await import(/* @vite-ignore */ url);
-      const candidate = mod?.default ?? mod;
-      if (hasInstrAPI(candidate)) {
-        tm = candidate;
-        console.log("[TM] ESM OK:", url);
-        return tm;
-      }
-      // Debughilfe – einmalig Keys loggen
-      console.warn("[TM] ESM geladen, aber Instruktionsfunktionen fehlen:", url, Object.keys(candidate || {}));
-      lastErr = new Error("Instruction API missing in " + url);
-    } catch (e) {
-      lastErr = e;
-      console.warn("[TM] ESM Import failed:", url, e?.message || e);
-    }
-  }
-
-  throw new Error(
-    "Metaplex TM: keine passenden Instruktions-Exporte gefunden (ESM). "
-    + "Letzter Fehler: " + (lastErr?.message || lastErr)
-  );
-}
-
-  // 3) Abbruch mit klarer Meldung
-  throw new Error(
-    "Metaplex TM: keine passende Web3.js-Instruktions-API gefunden. " +
-    "Pin auf v2.x fehlgeschlagen. Letzter Fehler: " + (lastErr?.message || lastErr)
-  );
-}
-
-/** lädt UMD-Script dynamisch (probiert mehrere Dateinamen) und liefert window.mplTokenMetadata */
-async function loadUmdTM() {
-  const cdnBases = [
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/",
-  ];
-  const files = [
-    "index.umd.js",
-    "index.umd.cjs",
-    "index.browser.js",
-    "index.browser.cjs"
-  ];
-  for (const base of cdnBases) {
-    for (const f of files) {
-      const url = base + f;
-      try {
-        await new Promise((resolve, reject) => {
-          const s = document.createElement("script");
-          s.src = url; s.async = true;
-          s.onload = () => resolve();
-          s.onerror = () => reject(new Error("load failed"));
-          document.head.appendChild(s);
-        });
-        if (window.mplTokenMetadata) {
-          console.log("[TM] UMD loaded:", url);
-          return window.mplTokenMetadata;
-        }
-      } catch {
-        // try next
-      }
-    }
-  }
-  return null;
-}
-
-/** Haupt-Loader: ESM versuchen → Facade; wenn keine Instruktions-Funktionen → UMD laden → Facade */
-async function getTokenMetadataFacade() {
-  if (TM_FACADE) return TM_FACADE;
-
-  // 1) ESM importieren
-  let esmMod = null;
-  try {
-    const m = await import("https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020&external=@solana/web3.js");
-    // mögliche „Wurzeln“ durchsuchen
-    const candidates = [
-      m?.default,
-      m,
-      m?.default?.mplTokenMetadata,
-      m?.default?.metadata,
-      m?.default?.programs?.metadata,
-      m?.default?.TokenMetadataProgram
-    ].filter(Boolean);
-
-    for (const c of candidates) {
-      const facade = makeFacadeFromObj(c);
-      if (facade) {
-        console.log("[TM] ESM OK – using keys:", facade._dbg);
-        TM_FACADE = facade;
-        return TM_FACADE;
-      }
-    }
-
-    // Debug: zeig die Exporte, damit wir sehen was drin ist
-    const dbg = m?.default ?? m ?? {};
-    console.warn("[TM] ESM exports:", Object.keys(dbg));
-  } catch (e) {
-    console.warn("[TM] ESM import failed:", e);
-  }
-
-  // 2) UMD nachladen
-  const umd = await loadUmdTM();
-  if (umd) {
-    const facade = makeFacadeFromObj(umd);
-    if (facade) {
-      console.log("[TM] UMD OK – using keys:", facade._dbg);
-      TM_FACADE = facade;
-      return TM_FACADE;
-    }
-    console.warn("[TM] UMD exports (no match):", Object.keys(umd || {}));
-  }
-
-  throw new Error("Metaplex TM: keine passenden Instruktions-Exporte gefunden (ESM/UMD).");
-}
+/* >>>>>>> Metaplex TM v2.x — reine ESM Named-Imports (CSP-safe) <<<<<<< */
+import {
+  // Programm-ID optional, wir berechnen PDAs selbst
+  createCreateMetadataAccountV3Instruction,
+  createCreateMasterEditionV3Instruction,
+  // wir prüfen zur Laufzeit welche Verify-Variante verfügbar ist
+  createVerifySizedCollectionItemInstruction,
+  createSetAndVerifySizedCollectionItemInstruction,
+  createVerifyCollectionInstruction,
+  createSetAndVerifyCollectionInstruction,
+} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.10.6?target=es2020&bundle";
 
 /* ==================== TM PROGRAM/PDAs ==================== */
 const te = new TextEncoder();
@@ -207,6 +68,23 @@ const findMasterEditionPda = (mint) =>
     [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
+
+/* Sanity-Check: stellen sicher, dass die Instruktionsfunktionen existieren */
+(function(){
+  const ok = typeof createCreateMetadataAccountV3Instruction === "function"
+          && typeof createCreateMasterEditionV3Instruction === "function";
+  if (!ok) {
+    console.warn("[TM] Named exports:", {
+      createCreateMetadataAccountV3Instruction: typeof createCreateMetadataAccountV3Instruction,
+      createCreateMasterEditionV3Instruction: typeof createCreateMasterEditionV3Instruction,
+      createVerifySizedCollectionItemInstruction: typeof createVerifySizedCollectionItemInstruction,
+      createSetAndVerifySizedCollectionItemInstruction: typeof createSetAndVerifySizedCollectionItemInstruction,
+      createVerifyCollectionInstruction: typeof createVerifyCollectionInstruction,
+      createSetAndVerifyCollectionInstruction: typeof createSetAndVerifyCollectionInstruction,
+    });
+    throw new Error("Metaplex TM (v2.x ESM): Instruktions-Exporte fehlen (CSP-safe).");
+  }
+})();
 
 /* ==================== FETCH-REWRITE ==================== */
 (function(){
@@ -225,7 +103,7 @@ const findMasterEditionPda = (mint) =>
   };
 })();
 
-/* ==================== HELPERS (unverändert) ==================== */
+/* ==================== HELPERS ==================== */
 const $ = (id)=>document.getElementById(id);
 const setStatus = (t, cls="")=>{
   const el = $("status"); if (!el) return;
@@ -325,7 +203,7 @@ async function updateBalance(){
   }
 }
 
-/* ==================== CLAIMS (unverändert) ==================== */
+/* ==================== CLAIMS ==================== */
 async function fetchClaims(){
   for (const url of CFG.CLAIMS){
     try{
@@ -383,8 +261,8 @@ async function safeMarkClaimed(i){
   await markClaimed(i);
 }
 
-/* ==================== IPFS Helpers & Preview (unverändert) ==================== */
-const fetchWithTimeout = (u, ms=6000)=>Promise.race([
+/* ==================== IPFS Helpers ==================== */
+const fetchWithTimeout = (u, ms=12000)=>Promise.race([
   fetch(u,{cache:"no-store"}),
   new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),ms))
 ]);
@@ -400,6 +278,8 @@ async function fetchFirst(metaUrls){
     });
   });
 }
+
+/* ==================== PREVIEW ==================== */
 const previewCache={};
 async function updatePreview(){
   const clampId=(v)=>{ v=Number(v)||0; return Math.max(0, Math.min(CFG.MAX_INDEX, v)); };
@@ -452,7 +332,7 @@ function renderPreview(id, meta){
   metaBox.innerHTML=""; metaBox.appendChild(dl);
 }
 
-/* ==================== Collection-Checks (unverändert) ==================== */
+/* ==================== Collection-Checks ==================== */
 async function fetchAccountInfo(conn, pubkey){
   try{ return await conn.getAccountInfo(pubkey,"confirmed"); }catch{ return null; }
 }
@@ -468,7 +348,7 @@ async function softAssertCollection(conn, mint){
   catch(e){ log("Warnung: Collection-Preflight skipped", e?.message||String(e)); }
 }
 
-/* ==================== Priority Fee (unverändert) ==================== */
+/* ==================== Priority Fee ==================== */
 async function setSmartPriority(tx, conn){
   try{
     const res=await conn.getRecentPrioritizationFees?.({percentiles:[50,75,90]});
@@ -483,7 +363,7 @@ async function setSmartPriority(tx, conn){
   }
 }
 
-/* ==================== Sign & Send (unverändert) ==================== */
+/* ==================== Sign & Send ==================== */
 async function signSendWithRetry(conn, tx, wallet, extraSigner){
   if (extraSigner) tx.partialSign(extraSigner);
   for (let attempt=0; attempt<3; attempt++){
@@ -515,8 +395,6 @@ async function doMint(){
     const btn=$("mintBtn"); btn.disabled=true;
     const lblEl=btn?.querySelector(".btn-label"); if (lblEl){ originalBtnText=lblEl.textContent; lblEl.textContent="Verarbeite..."; }
     setSpin(true);
-
-    const tm = await ensureTM();
 
     if (!phantom?.publicKey) throw new Error("Wallet nicht verbunden");
     const idRaw=Number($("tokenId").value||0);
@@ -561,52 +439,53 @@ async function doMint(){
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
-    // Create Metadata
-    tx.add(
-      tm.createCreateMetadataAccount(
-        { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
-        { createMetadataAccountArgsV3:{
-            data:{
-              name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
-              creators:[{address:creatorPk,verified:isSelf,share:100}],
-              collection:{key:collectionMint,verified:false}, uses:null
-            },
-            isMutable:true, collectionDetails:null
-          }
+    tx.add(createCreateMetadataAccountV3Instruction(
+      { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
+      { createMetadataAccountArgsV3:{
+          data:{
+            name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
+            creators:[{address:creatorPk,verified:isSelf,share:100}],
+            collection:{key:collectionMint,verified:false}, uses:null
+          },
+          isMutable:true, collectionDetails:null
         }
-      )
-    );
+      }
+    ));
 
-    // Master Edition
-    tx.add(
-      tm.createCreateMasterEdition(
-        { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
-        { createMasterEditionArgs:{ maxSupply:0 } }
-      )
-    );
+    tx.add(createCreateMasterEditionV3Instruction(
+      { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
+      { createMasterEditionArgs:{ maxSupply:0 } }
+    ));
 
-    // Verify (wenn Creator selbst mintet)
+    // Collection verify (wenn Creator == Payer)
     if (isSelf){
       const collMdPda=findMetadataPda(collectionMint);
       const collEdPda=findMasterEditionPda(collectionMint);
 
-      if (typeof tm.createVerifySizedCollectionItem === "function") {
-        tx.add(tm.createVerifySizedCollectionItem({
+      const canSized = typeof createVerifySizedCollectionItemInstruction === "function";
+      const canSizedSet = typeof createSetAndVerifySizedCollectionItemInstruction === "function";
+      const canLegacy = typeof createVerifyCollectionInstruction === "function";
+      const canLegacySet = typeof createSetAndVerifyCollectionInstruction === "function";
+
+      if (canSized) {
+        tx.add(createVerifySizedCollectionItemInstruction({
           metadata:metadataPda, collectionAuthority:payer, payer,
           collectionMint, collection:collMdPda, collectionMasterEditionAccount:collEdPda
         }));
-      } else if (typeof tm.createSetAndVerifySizedCollectionItem === "function") {
-        tx.add(tm.createSetAndVerifySizedCollectionItem({
+      } else if (canSizedSet) {
+        tx.add(createSetAndVerifySizedCollectionItemInstruction({
           metadata:metadataPda, collectionAuthority:payer, payer,
           collectionMint, collection:collMdPda, collectionMasterEditionAccount:collEdPda
         }));
-      } else if (typeof tm.createVerifyCollection === "function") {
-        tx.add(tm.createVerifyCollection({
-          metadata:metadataPda, collectionAuthority:payer, payer, collectionMint, collection:collMdPda
+      } else if (canLegacy) {
+        tx.add(createVerifyCollectionInstruction({
+          metadata:metadataPda, collectionAuthority:payer, payer,
+          collectionMint, collection:collMdPda
         }));
-      } else if (typeof tm.createSetAndVerifyCollection === "function") {
-        tx.add(tm.createSetAndVerifyCollection({
-          metadata:metadataPda, collectionAuthority:payer, payer, collectionMint, collection:collMdPda
+      } else if (canLegacySet) {
+        tx.add(createSetAndVerifyCollectionInstruction({
+          metadata:metadataPda, collectionAuthority:payer, payer,
+          collectionMint, collection:collMdPda
         }));
       } else {
         console.warn("[TM] Keine passende Verify-Instruction im Modul gefunden.");
@@ -644,6 +523,7 @@ function userFriendly(msg){
   if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
   if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
   if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
+  if (/Metaplex TM.*Instruktions-Exporte fehlen/i.test(msg)) return "TM-Library (ESM v2.x) nicht korrekt geladen.";
   return msg;
 }
 function handleError(context,e){
@@ -654,18 +534,21 @@ function handleError(context,e){
   log(`${context} ${msg}`);
 }
 
-/* ==================== UX Helpers & Start ==================== */
+/* ==================== UX Helpers ==================== */
 function applyMintButtonState(){
   const btn=$("mintBtn"); if (!btn) return;
   const ok=!!phantom?.publicKey && previewReady;
   btn.disabled=!ok;
 }
+
+/* ==================== UI WIRING ==================== */
 function wireUI(){
   $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
   $("randBtn")?.addEventListener("click", setRandomFreeId);
   $("tokenId")?.addEventListener("input", updatePreview);
 
+  // Donation-Pills
   const pills=Array.from(document.querySelectorAll('#donationOptions .pill'));
   const customContainer=$("customDonationContainer");
   const customInput=$("customDonationInput");
@@ -692,6 +575,8 @@ function wireUI(){
     if (/Instagram|FBAN|FBAV|Line\/|TikTok/i.test(ua)) setStatus("⚠️ Öffne diese Seite in einem externen Browser (Safari/Chrome) für Wallet-Popups.","warn");
   }catch{}
 }
+
+/* ==================== START ==================== */
 document.addEventListener("DOMContentLoaded", async ()=>{
   log("System boot",{build:BUILD_TAG,rpcs:CFG.RPCS});
   wireUI();
