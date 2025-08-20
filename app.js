@@ -31,18 +31,7 @@ const CFG = {
 };
 
 /* ==================== EVM NO-OP SHIM (gegen fremde EVM-Injections) ==================== */
-(function(){
-  try {
-    const w = window;
-    if (!w.ethereum) w.ethereum = {};
-    if (typeof w.ethereum.setExternalProvider !== "function") {
-      w.ethereum.setExternalProvider = function(){};
-    }
-    if (typeof w.ethereum.initializeProvider !== "function") {
-      w.ethereum.initializeProvider = function(){};
-    }
-  } catch {}
-})();
+
 
 /* ==================== Imports (ESM) ==================== */
 import {
