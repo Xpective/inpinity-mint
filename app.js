@@ -64,18 +64,16 @@ import {
   createAssociatedTokenAccountInstruction,
   createInitializeMint2Instruction,
   createMintToInstruction,
-  // 👇 neu: für Authority-Handovers
   createSetAuthorityInstruction,
   AuthorityType,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA (UMD only) ==================== */
+/* ==================== METAPLEX TOKEN METADATA (UMD via Worker) ==================== */
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 async function loadTM() {
-  // Wir laden ausschließlich das UMD-Bundle über deinen Worker.
   const candidates = [
     "https://api.inpinity.online/vendor/mpl-token-metadata-umd.js",
     "https://inpi-proxy-nft.s-plat.workers.dev/vendor/mpl-token-metadata-umd.js",
@@ -101,7 +99,7 @@ async function loadTM() {
 
       if (!TM) throw new Error("UMD global not found");
 
-      // builder-aliases (falls unter instructions genestet)
+      // Builder ggf. aus TM.instructions aliasen
       TM.createCreateMetadataAccountV2Instruction =
         TM.createCreateMetadataAccountV2Instruction || TM.instructions?.createCreateMetadataAccountV2Instruction;
       TM.createCreateMetadataAccountV3Instruction =
@@ -133,12 +131,10 @@ async function loadTM() {
   }
   throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden");
 }
-
 async function ensureTM() {
   if (!TM || !TOKEN_METADATA_PROGRAM_ID) await loadTM();
   return TM;
 }
-
 function getTokenMetadataProgramId() {
   if (!TOKEN_METADATA_PROGRAM_ID) {
     throw new Error("Metaplex Program-ID noch nicht initialisiert – ensureTM() zuerst aufrufen");
@@ -153,7 +149,6 @@ function tmCreateMetadataInstr(accounts, dataV2Like) {
    || TM.createCreateMetadataAccountV3Instruction;
   if (!fn) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
 
-  // V3 vs. V2: korrekten Argument-Container wählen
   const arg =
     fn.name.includes("V3")
       ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
@@ -161,104 +156,21 @@ function tmCreateMetadataInstr(accounts, dataV2Like) {
 
   return fn(accounts, arg);
 }
-
 function tmMasterEditionV3Instr(accounts, args) {
   const fn = TM.createCreateMasterEditionV3Instruction;
   if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
   return fn(accounts, args);
 }
-
 function tmVerifyCollectionInstr(obj) {
   const fn =
       TM.createSetAndVerifyCollectionInstruction
    || TM.createVerifyCollectionInstruction;
   return fn ? fn(obj) : null;
 }
-
 function tmUpdateMetadataV2Instr(accounts, args) {
   const fn = TM.createUpdateMetadataAccountV2Instruction;
   if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
   return fn(accounts, { updateMetadataAccountArgsV2: args });
-}
-
-function tmDeserializeMetadata(data) {
-  if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
-  if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
-  throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
-}
-
-/* ========== PDAs (mit Guard) – bleiben unverändert ========== */
-const te = new TextEncoder();
-const findMetadataPda = (mint) => {
-  const PID = getTokenMetadataProgramId();
-  return PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), PID.toBuffer(), mint.toBuffer()],
-    PID
-  )[0];
-};
-const findMasterEditionPda = (mint) => {
-  const PID = getTokenMetadataProgramId();
-  return PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), PID.toBuffer(), mint.toBuffer(), te.encode("edition")],
-    PID
-  )[0];
-};
-
-async function ensureTM() {
-  if (!TM || !TOKEN_METADATA_PROGRAM_ID) {
-    await loadTM();
-  }
-  return TM;
-}
-
-// Guarded Getter – verhindert null.toBuffer()
-function getTokenMetadataProgramId() {
-  if (!TOKEN_METADATA_PROGRAM_ID) {
-    throw new Error("Metaplex Program-ID noch nicht initialisiert – ensureTM() zuerst aufrufen");
-  }
-  return TOKEN_METADATA_PROGRAM_ID;
-}
-
-/* ========== Thin compatibility wrappers (v2/v3) ========== */
-function tmCreateMetadataInstr(accounts, dataV2Like) {
-  if (typeof TM.createCreateMetadataAccountV2Instruction === "function") {
-    return TM.createCreateMetadataAccountV2Instruction(accounts, {
-      createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true },
-    });
-  }
-  if (typeof TM.createCreateMetadataAccountV3Instruction === "function") {
-    return TM.createCreateMetadataAccountV3Instruction(accounts, {
-      createMetadataAccountArgsV3: {
-        data: dataV2Like,
-        isMutable: true,
-        collectionDetails: null,
-      },
-    });
-  }
-  throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
-}
-function tmMasterEditionV3Instr(accounts, args) {
-  if (typeof TM.createCreateMasterEditionV3Instruction === "function") {
-    return TM.createCreateMasterEditionV3Instruction(accounts, args);
-  }
-  throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
-}
-function tmVerifyCollectionInstr(obj) {
-  if (typeof TM.createSetAndVerifyCollectionInstruction === "function") {
-    return TM.createSetAndVerifyCollectionInstruction(obj);
-  }
-  if (typeof TM.createVerifyCollectionInstruction === "function") {
-    return TM.createVerifyCollectionInstruction(obj);
-  }
-  return null;
-}
-function tmUpdateMetadataV2Instr(accounts, args) {
-  if (typeof TM.createUpdateMetadataAccountV2Instruction === "function") {
-    return TM.createUpdateMetadataAccountV2Instruction(accounts, {
-      updateMetadataAccountArgsV2: args,
-    });
-  }
-  throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
 }
 function tmDeserializeMetadata(data) {
   if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
@@ -780,25 +692,18 @@ async function doMint(){
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
 
-    // === 1) Mint Account + InitializeMint (Authority = payer, temporär)
-    const mintKeypair=Keypair.generate();
-    const mint=mintKeypair.publicKey;
+    // 1) Mint Account + InitializeMint (Authority = payer, temporär)
+    const mintKeypair=Keypair.generate(); const mint=mintKeypair.publicKey;
 
     const rentLamports=await getMinimumBalanceForRentExemptMint(conn);
-    tx.add(SystemProgram.createAccount({
-      fromPubkey:payer,
-      newAccountPubkey:mint,
-      space:MINT_SIZE,
-      lamports:rentLamports,
-      programId:TOKEN_PROGRAM_ID
-    }));
+    tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
     tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
 
-    // === PDAs
+    // PDAs
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
-    // === 2) Create Metadata
+    // 2) Create Metadata
     tx.add(tmCreateMetadataInstr(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
       {
@@ -809,35 +714,23 @@ async function doMint(){
       }
     ));
 
-    // === 3) Create Master Edition V3
+    // 3) Create Master Edition V3
     tx.add(tmMasterEditionV3Instr(
       { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
       { createMasterEditionArgs:{ maxSupply:0 } }
     ));
 
-    // === 4) ATA anlegen (falls fehlt) + 1 Token minten (Authority = payer)
+    // 4) ATA anlegen + 1 Token minten
     const ata=await getAssociatedTokenAddress(mint,payer,false,TOKEN_PROGRAM_ID,ASSOCIATED_TOKEN_PROGRAM_ID);
     const ataInfo=await conn.getAccountInfo(ata);
     if (!ataInfo) tx.add(createAssociatedTokenAccountInstruction(payer,ata,payer,mint));
     tx.add(createMintToInstruction(mint,ata,payer,1));
 
-    // === 5) SetAuthority → MasterEdition (mintTokens + freezeAccount), wie bei #0
-    tx.add(createSetAuthorityInstruction(
-      mint,
-      payer,
-      AuthorityType.MintTokens,
-      masterEditionPda,
-      []
-    ));
-    tx.add(createSetAuthorityInstruction(
-      mint,
-      payer,
-      AuthorityType.FreezeAccount,
-      masterEditionPda,
-      []
-    ));
+    // 5) SetAuthority → MasterEdition (mintTokens + freezeAccount), wie bei #0
+    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.MintTokens,    masterEditionPda, []));
+    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.FreezeAccount, masterEditionPda, []));
 
-    // === 6) Verify Collection
+    // 6) Verify Collection
     const collMdPda  = findMetadataPda(collectionMint);
     const collEdPda  = findMasterEditionPda(collectionMint);
     const verifyInstr = tmVerifyCollectionInstr({
@@ -851,7 +744,7 @@ async function doMint(){
     });
     if (verifyInstr) tx.add(verifyInstr);
 
-    // === 7) Bei Fremd-Mint: Update-Authority → CREATOR
+    // 7) Bei Fremd-Mint: Update-Authority → CREATOR
     if (!isSelf){
       tx.add(tmUpdateMetadataV2Instr(
         { metadata: metadataPda, updateAuthority: payer },
@@ -952,9 +845,12 @@ function wireUI(){
     if (customContainer) customContainer.style.display=(checked.value==="custom")?"inline-flex":"none";
     updateEstimatedCost();
   };
-  pills.forEach(pill=>pill.addEventListener("click",()=>{
-    const radio=pill.querySelector('input[name="donation"]'); if (!radio) return; radio.checked=true; applyDonationSelection();
-  }));
+  pills.forEach(pill=>p
+    .addEventListener("click",()=>{
+      const radio=pill.querySelector('input[name="donation"]'); if (!radio) return;
+      radio.checked=true; applyDonationSelection();
+    })
+  );
   document.querySelectorAll('#donationOptions input[name="donation"]').forEach(radio=>{
     radio.addEventListener("change", applyDonationSelection);
   });
