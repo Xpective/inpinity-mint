@@ -66,7 +66,7 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA via UMD (robust + Logs) ==================== */
+/* ==================== METAPLEX TOKEN METADATA via ESM->UMD Fallback ==================== */
 let TM = null;
 let TM_PROGRAM_ID_V1 = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
@@ -97,56 +97,54 @@ async function loadScriptFromList(urls) {
 async function loadTM() {
   if (TM) return TM;
 
-  // 1) ESM (stabil)
+  // 1) Versuche ESM (sauber, ohne Globals)
   try {
-    // gebündelt + kompatibel im Browser
     const mod = await import(
       "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020"
     );
     TM = mod;
     TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
     TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
-    console.log("[vendor] mpl-token-metadata ready (esm.sh)", { programId: TOKEN_METADATA_PROGRAM_ID.toString() });
+
+    // sanity check: Metaplex program id beginnt mit "metaq"
+    if (!TOKEN_METADATA_PROGRAM_ID.toString().startsWith("metaq")) {
+      throw new Error("mpl-token-metadata: unerwarteter PROGRAM_ID Namespace");
+    }
+
+    console.log("[vendor] mpl-token-metadata ready (esm.sh)", {
+      programId: TOKEN_METADATA_PROGRAM_ID.toString()
+    });
     return TM;
   } catch (e) {
-    console.warn("[vendor] ESM import failed, fallback to UMD via /vendor:", String(e?.message || e));
+    console.warn("[vendor] ESM import failed – fallback UMD via /vendor:", String(e?.message || e));
   }
 
-  // 2) Fallback: dein Worker /vendor (wenn du unbedingt ein Global brauchst)
-  const workerBases = [
-    "https://api.inpinity.online",
-    "https://inpi-proxy-nft.s-plat.workers.dev",
+  // 2) Fallback: Worker-Vendor aus KV (stabil, keine CDNs)
+  const workerCandidates = [
+    `https://api.inpinity.online/vendor/mpl-token-metadata-umd.js?v=${encodeURIComponent(BUILD_TAG)}`,
+    `https://inpi-proxy-nft.s-plat.workers.dev/vendor/mpl-token-metadata-umd.js?v=${encodeURIComponent(BUILD_TAG)}`
   ];
-  const workerCandidates = workerBases.map(b => `${b}/vendor/mpl-token-metadata-umd.js`);
 
-  let lastErr;
-  for (const u of workerCandidates) {
-    try {
-      await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = u;
-        s.async = true;
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error(`script load failed: ${u}`));
-        document.head.appendChild(s);
-      });
+  const used = await loadScriptFromList(workerCandidates);
 
-      TM = window.mpl_token_metadata
-        || window.mplTokenMetadata
-        || (window.metaplex && window.metaplex.mplTokenMetadata);
+  TM = window.mpl_token_metadata
+    || window.mplTokenMetadata
+    || (window.metaplex && window.metaplex.mplTokenMetadata);
 
-      if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
+  if (!TM) throw new Error('mpl-token-metadata UMD: Global nicht gefunden');
 
-      TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
-      TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
-      console.log("[vendor] mpl-token-metadata ready (KV/UMD)", { from: u, programId: TOKEN_METADATA_PROGRAM_ID.toString() });
-      return TM;
-    } catch (e) {
-      lastErr = e;
-      console.warn("[vendor] fail:", String(e?.message || e));
-    }
+  TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
+  TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+
+  if (!TOKEN_METADATA_PROGRAM_ID.toString().startsWith("metaq")) {
+    throw new Error("mpl-token-metadata: unerwarteter PROGRAM_ID Namespace (UMD)");
   }
-  throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden");
+
+  console.log("[vendor] mpl-token-metadata ready (KV/UMD)", {
+    from: used,
+    programId: TOKEN_METADATA_PROGRAM_ID.toString()
+  });
+  return TM;
 }
 async function ensureTM(){ return loadTM(); }
 
