@@ -17,10 +17,14 @@
   <!-- EVM No-Op Shim: verhindert injected.bundle.js Fehler -->
   <!-- EVM No-Op Shim: verhindert Fehler von injected.bundle.js -->
 <script>
-  window.ethereum = window.ethereum || {};
-  if (typeof window.ethereum.setExternalProvider !== 'function') {
-    window.ethereum.setExternalProvider = function(){};
-  }
+  // Wir brauchen kein EVM in dieser App. Wenn ein Wallet irgendein halb-initialisiertes
+  // window.ethereum injiziert, verhindern wir, dass externe SDKs versuchen, damit zu arbeiten.
+  try {
+    if (window.ethereum && typeof window.ethereum.initializeProvider !== "function") {
+      // Markiere als "nicht vorhanden", damit EVM-SDKs nicht initialisieren.
+      Object.defineProperty(window, 'ethereum', { get() { return undefined; }, configurable: true });
+    }
+  } catch {}
 </script>
 </head>
 <body>
