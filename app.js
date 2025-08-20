@@ -30,10 +30,7 @@ const CFG = {
   ],
 };
 
-/* ==================== EVM NO-OP SHIM (gegen fremde EVM-Injections) ==================== */
-
-
-/* ==================== Imports (ESM) ==================== */
+/* ==================== SOLANA IMPORTS (ESM) ==================== */
 import {
   Connection, PublicKey, Transaction, SystemProgram,
   Keypair, ComputeBudgetProgram
@@ -50,19 +47,30 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* >>>>>>> Metaplex Token Metadata v1.x (ESM only) <<<<<<< */
-import {
-  PROGRAM_ID as TOKEN_METADATA_PROGRAM_ID_V1,
-  // v1 Data + Instruktionen
+/* ==================== METAPLEX TM v1 (ESM, kein UMD) ==================== */
+import * as tm from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@1.13.0?target=es2020&bundle";
+
+const {
+  PROGRAM_ID: TM_PROGRAM_ID_V1,
   createCreateMetadataAccountV2Instruction,
   createCreateMasterEditionV3Instruction,
   createVerifyCollectionInstruction,
   createSetAndVerifyCollectionInstruction,
-} from "https://esm.sh/@metaplex-foundation/mpl-token-metadata@1.13.0?target=es2020&bundle";
+} = tm;
+
+/* Sanity-Check: v1-Instruktionen vorhanden? */
+(function(){
+  const ok = typeof createCreateMetadataAccountV2Instruction === "function"
+          && typeof createCreateMasterEditionV3Instruction === "function";
+  if (!ok) {
+    console.warn("[TM v1] Export-Check:", Object.keys(tm));
+    throw new Error("Metaplex TM v1 (ESM): Instruktions-Exporte fehlen.");
+  }
+})();
 
 /* ==================== TM PROGRAM/PDAs ==================== */
 const te = new TextEncoder();
-const TOKEN_METADATA_PROGRAM_ID = new PublicKey(TOKEN_METADATA_PROGRAM_ID_V1.toString());
+const TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
 
 const findMetadataPda = (mint) =>
   PublicKey.findProgramAddressSync(
@@ -75,21 +83,6 @@ const findMasterEditionPda = (mint) =>
     [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
     TOKEN_METADATA_PROGRAM_ID
   )[0];
-
-/* Sanity-Check: v1-Instruktionen vorhanden? */
-(function(){
-  const ok = typeof createCreateMetadataAccountV2Instruction === "function"
-          && typeof createCreateMasterEditionV3Instruction === "function";
-  if (!ok) {
-    console.warn("[TM v1] Export-Check:", {
-      createCreateMetadataAccountV2Instruction: typeof createCreateMetadataAccountV2Instruction,
-      createCreateMasterEditionV3Instruction: typeof createCreateMasterEditionV3Instruction,
-      createVerifyCollectionInstruction: typeof createVerifyCollectionInstruction,
-      createSetAndVerifyCollectionInstruction: typeof createSetAndVerifyCollectionInstruction,
-    });
-    throw new Error("Metaplex TM v1 (ESM): Instruktions-Exporte fehlen.");
-  }
-})();
 
 /* ==================== FETCH-REWRITE (mainnet-beta → eigener RPC) ==================== */
 (function(){
@@ -473,12 +466,10 @@ async function doMint(){
       const collMdPda=findMetadataPda(collectionMint);
       const collEdPda=findMasterEditionPda(collectionMint);
 
-      // je nach verfügbarer API:
       const canVerify = typeof createVerifyCollectionInstruction === "function";
       const canSetAndVerify = typeof createSetAndVerifyCollectionInstruction === "function";
 
       if (canVerify) {
-        // benötigt i.d.R. collectionMasterEditionAccount
         tx.add(createVerifyCollectionInstruction({
           metadata: metadataPda,
           collectionAuthority: payer,
@@ -492,7 +483,7 @@ async function doMint(){
           metadata: metadataPda,
           collectionAuthority: payer,
           payer,
-          updateAuthority: payer, // einige v1 builds erwarten diesen zusätzlichen Account
+          updateAuthority: payer,
           collectionMint,
           collection: collMdPda,
           collectionMasterEditionAccount: collEdPda
