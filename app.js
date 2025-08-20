@@ -54,70 +54,54 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ========= Metaplex TM Loader: erzwinge UMD v2.x (Web3.js Instruktions-API) ========= */
-let TM = null;
+/* ========= Metaplex Token Metadata (CSP-sicher, ESM v2.x) =========
+   Ziel: Web3.js-Instruktionsfunktionen wie
+   - createCreateMetadataAccountV3Instruction
+   - createCreateMasterEditionV3Instruction
+   … ohne UMD, ohne eval, ohne UMI/Builder.
+*/
+let tm = null;
 
-// Bekannte UMD-Dateien (v2.x hat die Instruction-Funktionen)
-const TM_CDNS = [
-  "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@2.10.6/dist/",
-  "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@2.10.6/dist/",
-];
-const TM_FILES = [
-  "index.umd.js",
-  "index.umd.cjs",
-  "index.browser.js",
-  "index.browser.cjs",
-];
-
-function hasInstructionApi(obj) {
-  return obj
-    && typeof obj.createCreateMetadataAccountV3Instruction === "function"
-    && typeof obj.createCreateMasterEditionV3Instruction === "function";
+function hasInstrAPI(m) {
+  return m
+    && typeof m.createCreateMetadataAccountV3Instruction === "function"
+    && typeof m.createCreateMasterEditionV3Instruction === "function";
 }
 
-async function loadUmd(url) {
-  await new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = url;
-    s.async = true;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("UMD load failed: " + url));
-    document.head.appendChild(s);
-  });
-  return window.mplTokenMetadata || null;
-}
+// Kandidaten: v2.x als ESM von esm.sh (CSP-freundlich, keine eval)
+const TM_ESM_URLS = [
+  "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.10.6?bundle&target=es2020",
+  "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1?bundle&target=es2020",
+];
 
 async function ensureTM() {
-  if (TM) return TM;
+  if (tm) return tm;
 
-  // 1) Falls jemand trotzdem schon ein UMD geladen hat, nutze es.
-  if (hasInstructionApi(window.mplTokenMetadata)) {
-    TM = window.mplTokenMetadata;
-    console.log("[TM] Using preloaded UMD");
-    return TM;
-  }
-
-  // 2) Lade gezielt v2.x von CDN (mehrere Dateinamen probieren).
   let lastErr = null;
-  for (const base of TM_CDNS) {
-    for (const file of TM_FILES) {
-      const url = base + file;
-      try {
-        const mod = await loadUmd(url);
-        if (hasInstructionApi(mod)) {
-          TM = mod;
-          console.log("[TM] UMD OK:", url);
-          return TM;
-        } else if (mod) {
-          console.warn("[TM] UMD loaded but no Instruction API:", url, Object.keys(mod));
-          lastErr = new Error("No Instruction API in " + url);
-        }
-      } catch (e) {
-        lastErr = e;
-        // next candidate
+  for (const url of TM_ESM_URLS) {
+    try {
+      // dynamischer ESM-Import ist CSP-kompatibel, solange das Bundle selbst kein eval nutzt
+      const mod = await import(/* @vite-ignore */ url);
+      const candidate = mod?.default ?? mod;
+      if (hasInstrAPI(candidate)) {
+        tm = candidate;
+        console.log("[TM] ESM OK:", url);
+        return tm;
       }
+      // Debughilfe – einmalig Keys loggen
+      console.warn("[TM] ESM geladen, aber Instruktionsfunktionen fehlen:", url, Object.keys(candidate || {}));
+      lastErr = new Error("Instruction API missing in " + url);
+    } catch (e) {
+      lastErr = e;
+      console.warn("[TM] ESM Import failed:", url, e?.message || e);
     }
   }
+
+  throw new Error(
+    "Metaplex TM: keine passenden Instruktions-Exporte gefunden (ESM). "
+    + "Letzter Fehler: " + (lastErr?.message || lastErr)
+  );
+}
 
   // 3) Abbruch mit klarer Meldung
   throw new Error(
