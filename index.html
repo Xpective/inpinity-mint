@@ -15,17 +15,7 @@
   <link rel="stylesheet" href="./styles.css?v=15" />
 
   <!-- EVM No-Op Shim: verhindert injected.bundle.js Fehler -->
-  <script>
-    (function(){
-      try {
-        const w = window;
-        if (!w.ethereum) w.ethereum = {};
-        if (typeof w.ethereum.setExternalProvider !== "function") {
-          Object.defineProperty(w.ethereum, "setExternalProvider", { value: function(){}, configurable:true });
-        }
-      } catch {}
-    })();
-  </script>
+
 </head>
 <body>
   <header class="site-header">
@@ -112,6 +102,6 @@
   </main>
 
   <!-- Deine App -->
-  <script type="module" src="/app.js?v=19"></script>
+  <script type="module" src="/app.js?v=20"></script>
 </body>
 </html>
