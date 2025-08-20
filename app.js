@@ -252,7 +252,15 @@ function applyMintButtonState(){
 
 /* ==================== REGISTRY ==================== */
 async function recordMint(id, mint58, wallet58, signature) {
-  const payload = JSON.stringify({ id, mint: mint58, wallet: wallet58, sig: signature });
+  const payload = JSON.stringify({
+    id,
+    mint: mint58,
+    wallet: wallet58,
+    sig: signature,
+    collection: CFG.COLLECTION_MINT,       // NEU
+    name: desiredName(id),                  // optional
+    uri: uriForId(id)                       // optional
+  });
   const heads = { "content-type": "application/json" };
   for (const base of CFG.API_BASES) {
     try {
