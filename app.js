@@ -66,80 +66,101 @@ import {
   createMintToInstruction,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA (ESM-first, KV fallback) ==================== */
-let TM = null; // module namespace for mpl-token-metadata
-let TM_PROGRAM_ID_V1 = null; // metaqbxx...
-let TOKEN_METADATA_PROGRAM_ID = null; // PublicKey for PROGRAM_ID
+/* ==================== METAPLEX TOKEN METADATA (robuster Loader) ==================== */
+let TM = null;                         // Modulnamespace
+let TOKEN_METADATA_PROGRAM_ID = null;  // PublicKey der Metadata-Program-ID
+
+// Stabiler v1-Metadata-Program-ID Fallback (Mainnet)
+const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 async function loadTM() {
-  if (TM) return TM;
+  if (TM && TOKEN_METADATA_PROGRAM_ID) return TM;
 
-  // 1) Try ESM directly (fastest, cleanest)
+  // 1) ESM direkt (sauber & schnell)
   try {
     const mod = await import(
       "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020"
     );
     TM = mod;
-    TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
-    TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
 
-    // sanity: should start with "metaq"
+    const pidStr =
+      (TM.PROGRAM_ID && (TM.PROGRAM_ID.toString?.() ?? String(TM.PROGRAM_ID))) ||
+      FALLBACK_TM_PID;
+
+    TOKEN_METADATA_PROGRAM_ID = new PublicKey(pidStr);
     const pid = TOKEN_METADATA_PROGRAM_ID.toString();
-    if (!pid.startsWith("metaq")) throw new Error("unexpected PROGRAM_ID for mpl-token-metadata");
-
-    console.log("[vendor] mpl-token-metadata ready (ESM)", { programId: pid });
+    if (!pid.startsWith("metaq")) {
+      console.warn("[vendor] ungewöhnliche PROGRAM_ID (ESM):", pid);
+    } else {
+      console.log("[vendor] mpl-token-metadata ready (ESM)", { programId: pid });
+    }
+    window.__TM_OK__ = true; // debug flag
     return TM;
   } catch (e) {
-    console.warn("[vendor] ESM import failed – will try KV fallback:", String(e?.message || e));
+    console.warn("[vendor] ESM-Import fehlgeschlagen – probiere KV-Fallback:", String(e?.message || e));
   }
 
-  // 2) Fallback → load from your Worker KV: /vendor/mpl-token-metadata-umd.js
-  // NOTE: the KV file is actually a tiny ES module shim (see section 2 below).
+  // 2) KV-Fallback (dein Worker liefert /vendor/mpl-token-metadata-umd.js)
   const workerBases = [
     "https://api.inpinity.online",
     "https://inpi-proxy-nft.s-plat.workers.dev",
   ];
-  const workerCandidates = workerBases.map(b => `${b}/vendor/mpl-token-metadata-umd.js`);
+  const candidates = workerBases.map(b => `${b}/vendor/mpl-token-metadata-umd.js`);
 
   let lastErr = null;
-  for (const u of workerCandidates) {
+  for (const url of candidates) {
     try {
       await new Promise((resolve, reject) => {
         const s = document.createElement("script");
-        s.src = u;
+        s.src = url;
         s.async = true;
-        s.type = "module"; // IMPORTANT: our shim uses `import`, so it must be a module
+        s.type = "module"; // wichtig: unser KV-Shim nutzt `import`
         s.onload = () => resolve();
-        s.onerror = () => reject(new Error(`script load failed: ${u}`));
+        s.onerror = () => reject(new Error(`script load failed: ${url}`));
         document.head.appendChild(s);
       });
 
-      // our shim attaches multiple globals for safety
       TM =
         window.mpl_token_metadata ||
         window.mplTokenMetadata ||
         (window.metaplex && window.metaplex.mplTokenMetadata);
 
-      if (!TM) throw new Error("mpl-token-metadata UMD/global not found after KV load");
+      if (!TM) throw new Error("KV shim geladen, aber Global nicht vorhanden");
 
-      TM_PROGRAM_ID_V1 = TM.PROGRAM_ID;
-      TOKEN_METADATA_PROGRAM_ID = new PublicKey(TM_PROGRAM_ID_V1.toString());
+      const pidStr =
+        (TM.PROGRAM_ID && (TM.PROGRAM_ID.toString?.() ?? String(TM.PROGRAM_ID))) ||
+        FALLBACK_TM_PID;
 
+      TOKEN_METADATA_PROGRAM_ID = new PublicKey(pidStr);
       const pid = TOKEN_METADATA_PROGRAM_ID.toString();
       if (!pid.startsWith("metaq")) {
-        throw new Error("unexpected PROGRAM_ID for KV mpl-token-metadata");
+        console.warn("[vendor] ungewöhnliche PROGRAM_ID (KV):", pid);
       }
-
-      console.log("[vendor] mpl-token-metadata ready (KV fallback)", { from: u, programId: pid });
+      console.log("[vendor] mpl-token-metadata ready (KV)", { from: url, programId: pid });
+      window.__TM_OK__ = true;
       return TM;
     } catch (e) {
       lastErr = e;
-      console.warn("[vendor] KV candidate failed:", String(e?.message || e));
+      console.warn("[vendor] KV-Kandidat scheiterte:", String(e?.message || e));
     }
   }
-  throw lastErr || new Error("Failed to load mpl-token-metadata from all sources");
+  throw lastErr || new Error("mpl-token-metadata konnte aus keiner Quelle geladen werden");
 }
-async function ensureTM(){ return loadTM(); }
+
+async function ensureTM() {
+  if (!TM || !TOKEN_METADATA_PROGRAM_ID) {
+    await loadTM();
+  }
+  return TM;
+}
+
+// Guarded Getter – verhindert null.toBuffer()
+function getTokenMetadataProgramId() {
+  if (!TOKEN_METADATA_PROGRAM_ID) {
+    throw new Error("Metaplex Program-ID noch nicht initialisiert – ensureTM() zuerst aufrufen");
+  }
+  return TOKEN_METADATA_PROGRAM_ID;
+}
 
 /* ========== Thin compatibility wrappers (v2/v3) ========== */
 function tmCreateMetadataInstr(accounts, dataV2Like) {
@@ -157,16 +178,15 @@ function tmCreateMetadataInstr(accounts, dataV2Like) {
       },
     });
   }
-  throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) not available");
+  throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
 }
 function tmMasterEditionV3Instr(accounts, args) {
   if (typeof TM.createCreateMasterEditionV3Instruction === "function") {
     return TM.createCreateMasterEditionV3Instruction(accounts, args);
   }
-  throw new Error("mpl-token-metadata: CreateMasterEditionV3 not available");
+  throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
 }
 function tmVerifyCollectionInstr(obj) {
-  // prefer set+verify if available
   if (typeof TM.createSetAndVerifyCollectionInstruction === "function") {
     return TM.createSetAndVerifyCollectionInstruction(obj);
   }
@@ -181,28 +201,31 @@ function tmUpdateMetadataV2Instr(accounts, args) {
       updateMetadataAccountArgsV2: args,
     });
   }
-  throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 not available");
+  throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
 }
 function tmDeserializeMetadata(data) {
   if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
   if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
-  throw new Error("mpl-token-metadata: Metadata.deserialize not available");
+  throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
 }
 
-/* ========== PDAs ========== */
+/* ========== PDAs (mit Guard) ========== */
 const te = new TextEncoder();
-const findMetadataPda = (mint) =>
-  PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    TOKEN_METADATA_PROGRAM_ID
+const findMetadataPda = (mint) => {
+  const PID = getTokenMetadataProgramId();
+  return PublicKey.findProgramAddressSync(
+    [te.encode("metadata"), PID.toBuffer(), mint.toBuffer()],
+    PID
   )[0];
-const findMasterEditionPda = (mint) =>
-  PublicKey.findProgramAddressSync(
-    [te.encode("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), te.encode("edition")],
-    TOKEN_METADATA_PROGRAM_ID
+};
+const findMasterEditionPda = (mint) => {
+  const PID = getTokenMetadataProgramId();
+  return PublicKey.findProgramAddressSync(
+    [te.encode("metadata"), PID.toBuffer(), mint.toBuffer(), te.encode("edition")],
+    PID
   )[0];
-  
-  
+};
+
 /* ==================== FETCH-REWRITE (mainnet-beta → eigener RPC) ==================== */
 (function(){
   const MAINNET = /https:\/\/api\.mainnet-beta\.solana\.com\/?$/i;
@@ -251,7 +274,7 @@ let connection=null, phantom=null, originalBtnText="";
 let claimedSet=new Set(), availableIds=[];
 let inFlight=false, previewReady=false;
 
-/* ==================== UX Helpers (früh, damit nie „undefined“) ==================== */
+/* ==================== UX Helpers ==================== */
 function applyMintButtonState(){
   const btn=$("mintBtn"); if (!btn) return;
   const ok=!!phantom?.publicKey && previewReady;
@@ -500,7 +523,6 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
 
   log("collection: ok", { name, symbol: sym, uri });
 
-  // payerPk darf leer sein (Boot ohne Wallet)
   return { mdPda, edPda, name, symbol: sym, uri };
 }
 async function softAssertCollection(conn, collectionMintPk){
@@ -535,7 +557,7 @@ async function signSendWithRetry(conn, tx, wallet, extraSigner){
   for (let attempt=0; attempt<3; attempt++){
     const {blockhash,lastValidBlockHeight}=await conn.getLatestBlockhash();
     tx.recentBlockhash=blockhash; tx.feePayer=wallet.publicKey;
-    const signed=await wallet.signTransaction(tx); // Phantom Popup
+    const signed=await wallet.signTransaction(tx);
 
     const sim=await conn.simulateTransaction(signed,{sigVerify:false,commitment:"processed"});
     if (sim?.value?.logs) log("simulate logs", sim.value.logs);
@@ -689,14 +711,14 @@ async function doMint(){
     }
 
     /* === FALL B: Normaler Mint === */
-    await softAssertCollection(conn, collectionMint); // Logs "collection: start/ok"
+    await softAssertCollection(conn, collectionMint);
 
     const nftName=desiredName(id); const nftUri=uriForId(id);
 
     const tx=new Transaction();
     await setSmartPriority(tx, conn);
 
-    // Creator-Fee + optional Donation (nur wenn nicht Creator selbst)
+    // Creator-Fee + optionale Donation (nur wenn nicht Creator selbst)
     const feeLamports=isSelf?0:Math.round(CFG.MINT_FEE_SOL*1e9);
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
@@ -704,7 +726,7 @@ async function doMint(){
     // Mint Account + init + ATA + mint 1
     const mintKeypair=Keypair.generate(); const mint=mintKeypair.publicKey;
 
-    const rentLamports=await getMinimumBalanceForRentExemptMint(conn); // conn, nicht global
+    const rentLamports=await getMinimumBalanceForRentExemptMint(conn);
     tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
     tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
 
@@ -866,10 +888,9 @@ document.addEventListener("DOMContentLoaded", async ()=>{
   await updatePreview();
   applyMintButtonState();
 
-  // Preflight beim Boot (zeigt "collection: start/ok", auch ohne Wallet)
   try {
     const conn = await ensureConnection();
-    await ensureTM();
+    await ensureTM(); // <- stellt PID bereit
     await softAssertCollection(conn, new PublicKey(CFG.COLLECTION_MINT));
   } catch (e) {
     log("collection preflight at boot failed", String(e?.message||e));
