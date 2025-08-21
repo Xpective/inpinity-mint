@@ -3,7 +3,7 @@
    =========================================== */
 
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v30";
+const BUILD_TAG = "mint-v31";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -55,7 +55,7 @@ const CFG = {
 /* ==================== SOLANA IMPORTS (ESM) ==================== */
 import {
   Connection, PublicKey, Transaction, SystemProgram,
-  Keypair, ComputeBudgetProgram
+  Keypair, ComputeBudgetProgram, SYSVAR_RENT_PUBKEY
 } from "https://esm.sh/@solana/web3.js@1.95.3";
 
 import {
@@ -600,70 +600,45 @@ async function setSmartPriority(tx, conn){
 }
 
 /* ==================== Sign & Send ==================== */
-/* === Helper: Transaktion mit frischem Blockhash vorbereiten === */
 function cloneTxWithBlockhash(srcTx, recentBlockhash, feePayer, extraSigner) {
-  // Neu initialisieren (sauber, ohne side effects)
   const tx = new Transaction();
   tx.feePayer = feePayer;
   tx.recentBlockhash = recentBlockhash;
-
-  // alle Instruktionen übernehmen (in gleicher Reihenfolge)
   for (const ix of srcTx.instructions) tx.add(ix);
-
-  // ggf. den neuen Mint-Schlüssel wieder teil-signieren
   if (extraSigner) tx.partialSign(extraSigner);
   return tx;
 }
-
-/* === Robuster Send mit Blockhash-Rotation & besserem Logging === */
 async function signSendWithRetry(conn, builtTx, wallet, extraSigner){
-  // wir versuchen ein paarmal mit frischem Blockhash
   for (let attempt=0; attempt<3; attempt++){
-    // 1) frischen Blockhash holen
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('processed');
-
-    // 2) Transaktion sauber neu aufsetzen (Clone) + ggf. partialSign
     let tx = cloneTxWithBlockhash(builtTx, blockhash, wallet.publicKey, extraSigner);
 
-    // 3) Simulation (holt oft nützliche Logs bei Fehlern)
     try {
       const sim = await conn.simulateTransaction(tx, { sigVerify:false, commitment:"processed" });
       if (sim?.value?.logs?.length) log("simulate logs", sim.value.logs);
-      if (sim?.value?.err) {
-        throw new Error("Simulation fehlgeschlagen: " + JSON.stringify(sim.value.err));
-      }
+      if (sim?.value?.err) throw new Error("Simulation fehlgeschlagen: " + JSON.stringify(sim.value.err));
     } catch (e) {
-      // bei Sim-Fehlern trotzdem versuchen zu senden – aber klar loggen
       log("simulate error", String(e?.message||e));
     }
 
-    // 4) Wallet signieren lassen
     let signed;
-    try {
-      signed = await wallet.signTransaction(tx);
-    } catch (e) {
-      // typischer User-Abbruch oder Signing-Fehler
-      throw new Error(e?.message || "Signierung abgebrochen/fehlgeschlagen");
-    }
+    try { signed = await wallet.signTransaction(tx); }
+    catch (e) { throw new Error(e?.message || "Signierung abgebrochen/fehlgeschlagen"); }
 
-    // 5) Senden + Bestätigen
     try{
       const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight:false, preflightCommitment:"confirmed" });
       await conn.confirmTransaction({ signature:sig, blockhash, lastValidBlockHeight }, "confirmed");
       return sig;
     } catch (e) {
       const msg = e?.message || "";
-      // Abgelaufener Blockhash? -> nächster Versuch mit neuem Hash
       if (/BlockhashNotFound|expired|block height exceeded/i.test(msg)) {
         log("blockhash expired – retry", { attempt: attempt+1, err: msg });
         continue;
       }
-      // Wenn Node „Transaction recentBlockhash required“ meldet → harter Fix:
       if (/recentBlockhash required/i.test(msg)) {
         log("recentBlockhash required – retry with fresh hash", { attempt: attempt+1 });
         continue;
       }
-      // alles andere: rauswerfen
       throw new Error(msg || "Senden fehlgeschlagen");
     }
   }
@@ -816,97 +791,119 @@ async function doMint(){
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
 
-// --- 1) Mint-Account + InitializeMint (Authority = payer, temporär)
-const mintKeypair = Keypair.generate();
-const mint = mintKeypair.publicKey;
+    // --- 1) Mint-Account + InitializeMint (Authority = payer, temporär)
+    const mintKeypair = Keypair.generate();
+    const mint = mintKeypair.publicKey;
 
-const rentLamports = await getMinimumBalanceForRentExemptMint(connection || await ensureConnection());
-built.add(SystemProgram.createAccount({
-  fromPubkey: payer,
-  newAccountPubkey: mint,
-  space: MINT_SIZE,
-  lamports: rentLamports,
-  programId: TOKEN_PROGRAM_ID
-}));
-built.add(createInitializeMint2Instruction(mint, 0, payer, payer));
+    const rentLamports = await getMinimumBalanceForRentExemptMint(conn);
+    tx.add(SystemProgram.createAccount({
+      fromPubkey: payer,
+      newAccountPubkey: mint,
+      space: MINT_SIZE,
+      lamports: rentLamports,
+      programId: TOKEN_PROGRAM_ID
+    }));
+    tx.add(createInitializeMint2Instruction(mint, 0, payer, payer));
 
-// --- 2) ATA anlegen + genau 1 Token minten (WICHTIG: vor MasterEdition!)
-const ata = await getAssociatedTokenAddress(
-  mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-);
-const ataInfo = await conn.getAccountInfo(ata);
-if (!ataInfo) {
-  built.add(createAssociatedTokenAccountInstruction(payer, ata, payer, mint));
-}
-built.add(createMintToInstruction(mint, ata, payer, 1));
+    // --- 2) ATA anlegen + genau 1 Token minten (WICHTIG: vor MasterEdition!)
+    const ata = await getAssociatedTokenAddress(
+      mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const ataInfo = await conn.getAccountInfo(ata);
+    if (!ataInfo) tx.add(createAssociatedTokenAccountInstruction(payer, ata, payer, mint));
+    tx.add(createMintToInstruction(mint, ata, payer, 1));
 
-// --- 3) Metadata anlegen
-const metadataPda = findMetadataPda(mint);
-built.add(tmCreateMetadataInstr(
-  {
-    metadata: metadataPda,
-    mint,
-    mintAuthority: payer,
-    payer,
-    updateAuthority: payer,
-    systemProgram: SystemProgram.programId,
-    rent: SYSVAR_RENT_PUBKEY
-  },
-  {
-    name: nftName,
-    symbol: "InPi",
-    uri: nftUri,
-    sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-    creators: [{ address: creatorPk, verified: isSelf, share: 100 }],
-    collection: { key: collectionMint, verified: false },
-    uses: null
+    // --- 3) Metadata anlegen
+    const metadataPda = findMetadataPda(mint);
+    tx.add(tmCreateMetadataInstr(
+      {
+        metadata: metadataPda,
+        mint,
+        mintAuthority: payer,
+        payer,
+        updateAuthority: payer
+        // systemProgram/rent optional
+      },
+      {
+        name: nftName,
+        symbol: "InPi",
+        uri: nftUri,
+        sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+        creators: [{ address: creatorPk, verified: isSelf, share: 100 }],
+        collection: { key: collectionMint, verified: false },
+        uses: null
+      }
+    ));
+
+    // --- 4) Master Edition V3 (jetzt erlaubt – supply = 1)
+    const masterEditionPda = findMasterEditionPda(mint);
+    tx.add(tmMasterEditionV3Instr(
+      {
+        edition: masterEditionPda,
+        mint,
+        updateAuthority: payer,
+        mintAuthority: payer,
+        payer,
+        metadata: metadataPda
+      },
+      { createMasterEditionArgs: { maxSupply: 0 } }
+    ));
+
+    // --- 5) Optional: Authorities entziehen (empfohlen: auf NULL setzen)
+    tx.add(createSetAuthorityInstruction(
+      mint, payer, AuthorityType.MintTokens,    null, []
+    ));
+    tx.add(createSetAuthorityInstruction(
+      mint, payer, AuthorityType.FreezeAccount, null, []
+    ));
+
+    // --- 6) Collection verifizieren
+    const collMdPda = findMetadataPda(collectionMint);
+    const collEdPda = findMasterEditionPda(collectionMint);
+    const verifyInstr = tmVerifyCollectionInstr({
+      metadata: metadataPda,
+      collectionAuthority: payer,
+      payer,
+      updateAuthority: payer,
+      collectionMint,
+      collection: collMdPda,
+      collectionMasterEditionAccount: collEdPda
+    });
+    if (verifyInstr) tx.add(verifyInstr);
+
+    // --- 7) Bei Fremd-Mint Update-Authority → CREATOR
+    if (!isSelf) {
+      tx.add(tmUpdateMetadataV2Instr(
+        { metadata: metadataPda, updateAuthority: payer },
+        { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
+      ));
+    }
+
+    setStatus("Bitte im Wallet signieren…","info");
+    const signature=await signSendWithRetry(conn, tx, wallet, mintKeypair);
+
+    log("sent",{signature});
+    const link=`https://solscan.io/tx/${signature}`;
+    setStatus(
+      `✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>
+       <button id="copyTx" class="btn-mini">Copy Tx</button>`,
+      "ok"
+    );
+    setTimeout(()=>{ const c=document.getElementById("copyTx"); if (c) c.onclick=()=>navigator.clipboard.writeText(signature); },0);
+
+    // Registry
+    try { await recordMint(id, mint.toBase58(), payer.toBase58(), signature); } catch {}
+
+    await markClaimed(id); claimedSet.add(id); recomputeAvailable();
+    await setNextFreeId(); await updateBalance();
+
+  }catch(e){ handleError("Mint/Repair fehlgeschlagen:", e);
+  }finally{
+    setSpin(false);
+    const btn=$("mintBtn");
+    if (btn){ btn.disabled=false; const lbl=btn.querySelector(".btn-label"); if (lbl&&originalBtnText) lbl.textContent=originalBtnText; }
+    inFlight=false;
   }
-));
-
-// --- 4) Master Edition V3 (jetzt erlaubt – supply = 1)
-const masterEditionPda = findMasterEditionPda(mint);
-built.add(tmMasterEditionV3Instr(
-  {
-    edition: masterEditionPda,
-    mint,
-    updateAuthority: payer,
-    mintAuthority: payer,
-    payer,
-    metadata: metadataPda,
-    systemProgram: SystemProgram.programId
-  },
-  { createMasterEditionArgs: { maxSupply: 0 } }
-));
-
-// --- 5) Optional: Authorities entziehen (empfohlen: auf NULL setzen)
-built.add(createSetAuthorityInstruction(
-  mint, payer, AuthorityType.MintTokens,    null /* = nobody */, []
-));
-built.add(createSetAuthorityInstruction(
-  mint, payer, AuthorityType.FreezeAccount, null /* = nobody */, []
-));
-
-// --- 6) Collection verifizieren
-const collMdPda = findMetadataPda(collectionMint);
-const collEdPda = findMasterEditionPda(collectionMint);
-const verifyInstr = tmVerifyCollectionInstr({
-  metadata: metadataPda,
-  collectionAuthority: payer,
-  payer,
-  updateAuthority: payer,
-  collectionMint,
-  collection: collMdPda,
-  collectionMasterEditionAccount: collEdPda,
-  systemProgram: SystemProgram.programId
-});
-if (verifyInstr) built.add(verifyInstr);
-
-// --- 7) Bei Fremd-Mint Update-Authority → CREATOR
-if (!isSelf) {
-  built.add(tmUpdateMetadataV2Instr(
-    { metadata: metadataPda, updateAuthority: payer, systemProgram: SystemProgram.programId, rent: SYSVAR_RENT_PUBKEY },
-    { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
-  ));
 }
 
 /* ==================== ERROR HANDLING ==================== */
