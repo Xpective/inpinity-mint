@@ -3,7 +3,7 @@
    =========================================== */
 
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v31";
+const BUILD_TAG = "mint-v32";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -510,6 +510,11 @@ function renderPreview(id, meta){
   if (meta.seller_fee_basis_points!==undefined && meta.seller_fee_basis_points!==CFG.ROYALTY_BPS) {
     errs.push(`Royalties nicht ${CFG.ROYALTY_BPS/100}%`);
   }
+  // Achtung: JSON-Name sollte "Pi Pyramid #id" sein – sonst Hinweis
+  const wantName = desiredName(id);
+  if (meta?.name && stripNulls(meta.name) !== wantName) {
+    errs.push(`JSON-Name abweichend („${stripNulls(meta.name)}“ ≠ „${wantName}“)`);
+  }
   if (errs.length) $("uriStatus").textContent += ` ⚠️ ${errs.join(", ")}`;
 
   const media=$("mediaBox"); const metaUrl=toHttp(meta.animation_url||meta.image);
@@ -519,7 +524,7 @@ function renderPreview(id, meta){
   const metaBox=$("metaBox");
   const dl=document.createElement("dl");
   const add=(k,v)=>{const dt=document.createElement("dt");dt.textContent=k; const dd=document.createElement("dd");dd.textContent=v; dl.append(dt,dd);};
-  add("Name", meta.name||desiredName(id));
+  add("Name", meta.name||wantName);
   if (meta.description) add("Beschreibung", meta.description);
   if (Array.isArray(meta.attributes)) add("Attribute", meta.attributes.map(a=>`${a.trait_type||"Trait"}: ${a.value}`).join(" · "));
   metaBox.innerHTML=""; metaBox.appendChild(dl);
@@ -952,6 +957,53 @@ async function onShowMyMints() {
   }catch(e){ log("myMints error", String(e?.message||e)); }
 }
 
+/* ==================== NETWORK GUARD (Mainnet Badge) ==================== */
+const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+
+function upsertNetBadge(text, ok){
+  let b=document.getElementById("netBadge");
+  if(!b){
+    b=document.createElement("span");
+    b.id="netBadge";
+    b.style.display="inline-flex";
+    b.style.alignItems="center";
+    b.style.gap="6px";
+    b.style.padding="6px 10px";
+    b.style.borderRadius="999px";
+    b.style.fontWeight="800";
+    b.style.fontSize="12px";
+    b.style.letterSpacing="0.3px";
+    b.style.marginLeft="8px";
+    b.style.border="1px solid #ffffff22";
+    const host=document.querySelector(".wallet-stats") || document.querySelector(".top-actions");
+    host && host.appendChild(b);
+  }
+  b.textContent = text;
+  if (ok){
+    b.style.background="linear-gradient(135deg,#00f5ff22,#7b90ff22)";
+    b.style.color="#bffcff";
+    b.style.borderColor="#00f5ff66";
+  } else {
+    b.style.background="#1a160d";
+    b.style.color="#fff1c1";
+    b.style.borderColor="#ffe57f88";
+  }
+}
+
+async function assertMainnet(conn){
+  try{
+    const gh = await conn.getGenesisHash();
+    const isMain = gh === MAINNET_GENESIS;
+    log("network", { genesis: gh, expected: MAINNET_GENESIS, mainnet: isMain });
+    upsertNetBadge(isMain ? "mainnet" : "⚠︎ not mainnet", isMain);
+    if (!isMain) setStatus("⚠️ Nicht auf Mainnet! Bitte RPC prüfen.", "warn");
+    return isMain;
+  }catch(e){
+    log("network check failed", String(e?.message||e));
+    return false;
+  }
+}
+
 /* ==================== UI WIRING ==================== */
 function wireUI(){
   $("connectBtn")?.addEventListener("click", connectPhantom);
@@ -1016,6 +1068,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
 
   try {
     const conn = await ensureConnection();
+    await assertMainnet(conn); // <<< Mainnet-Proof + Badge
     await ensureTM();
     await softAssertCollection(conn, new PublicKey(CFG.COLLECTION_MINT));
   } catch (e) {
