@@ -3,7 +3,7 @@
    =========================================== */
 
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v26";
+const BUILD_TAG = "mint-v27";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -73,10 +73,8 @@ let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
-/* small util: safe getter for nested paths */
-function getPath(obj, path) {
-  return path.split(".").reduce((o,k)=>o?.[k], obj);
-}
+/* small utils */
+function getPath(obj, path) { return path.split(".").reduce((o,k)=>o?.[k], obj); }
 function pick(obj, pathList, type = "function") {
   for (const p of pathList) {
     const v = getPath(obj, p);
@@ -87,13 +85,23 @@ function pick(obj, pathList, type = "function") {
   }
   return null;
 }
+function logModuleShapeOnce(mod) {
+  if (logModuleShapeOnce._done) return;
+  try {
+    const top = Object.keys(mod || {});
+    const ns = {};
+    ["instructions","builders","generated","accounts","constants"].forEach(k=>{
+      const v = mod?.[k]; if (v && typeof v === "object") ns[k]=Object.keys(v);
+    });
+    console.warn("[mpl-token-metadata] shape", { top, ns });
+  } catch {}
+  logModuleShapeOnce._done = true;
+}
 
 async function loadTM() {
   const sources = [
-    // zuerst „plain“ ESM (ohne bundle)
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0",
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0",
-    // dann Bundle-Fallbacks
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?target=es2020&bundle",
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0?target=es2020&bundle",
   ];
@@ -101,11 +109,8 @@ async function loadTM() {
   for (const url of sources) {
     try {
       const mod = await import(/* @vite-ignore */ url);
-
-      // esm.sh kann je nach Variante ein default‑Namespace liefern
       TM = (mod && typeof mod.default === "object") ? mod.default : mod;
 
-      // PROGRAM_ID lesen (verschiedene Pfade)
       const pidRaw =
            TM?.PROGRAM_ID
         || TM?.constants?.PROGRAM_ID
@@ -141,33 +146,67 @@ function getTokenMetadataProgramId() {
   return TOKEN_METADATA_PROGRAM_ID;
 }
 
-/* ========== Thin wrappers: NUR LESEN aus möglichen Pfaden ========== */
+/* ======= Wrapper: berücksichtigt mehrere Namensvarianten ======= */
 function tmCreateMetadataInstr(accounts, dataV2Like) {
+  // Varianten mit & ohne doppeltes "Create"
   const fn = pick(TM, [
-    // top-level
+    // with double "Create"
     "createCreateMetadataAccountV3Instruction",
     "createCreateMetadataAccountV2Instruction",
-    // unter namespaces
     "instructions.createCreateMetadataAccountV3Instruction",
     "instructions.createCreateMetadataAccountV2Instruction",
     "builders.createCreateMetadataAccountV3Instruction",
     "builders.createCreateMetadataAccountV2Instruction",
     "generated.createCreateMetadataAccountV3Instruction",
     "generated.createCreateMetadataAccountV2Instruction",
+    // single "Create"
+    "createMetadataAccountV3Instruction",
+    "createMetadataAccountV2Instruction",
+    "instructions.createMetadataAccountV3Instruction",
+    "instructions.createMetadataAccountV2Instruction",
+    "builders.createMetadataAccountV3Instruction",
+    "builders.createMetadataAccountV2Instruction",
+    "generated.createMetadataAccountV3Instruction",
+    "generated.createMetadataAccountV2Instruction",
+    // builder returning ix
+    "createMetadataAccountV3",
+    "instructions.createMetadataAccountV3",
+    "builders.createMetadataAccountV3",
+    "generated.createMetadataAccountV3",
   ], "function");
-  if (!fn) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
 
-  const hasV3 =
-       !!pick(TM, ["createCreateMetadataAccountV3Instruction",
-                   "instructions.createCreateMetadataAccountV3Instruction",
-                   "builders.createCreateMetadataAccountV3Instruction",
-                   "generated.createCreateMetadataAccountV3Instruction"], "function");
+  if (!fn) {
+    logModuleShapeOnce(TM);
+    throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
+  }
 
-  const arg = hasV3
+  // Erkennen, ob V3-Args oder V2-Args gebraucht werden
+  const takesV3 =
+       !!pick(TM, [
+         "createCreateMetadataAccountV3Instruction",
+         "instructions.createCreateMetadataAccountV3Instruction",
+         "builders.createCreateMetadataAccountV3Instruction",
+         "generated.createCreateMetadataAccountV3Instruction",
+         "createMetadataAccountV3Instruction",
+         "instructions.createMetadataAccountV3Instruction",
+         "builders.createMetadataAccountV3Instruction",
+         "generated.createMetadataAccountV3Instruction",
+         "createMetadataAccountV3",
+         "instructions.createMetadataAccountV3",
+         "builders.createMetadataAccountV3",
+         "generated.createMetadataAccountV3",
+       ], "function");
+
+  const arg = takesV3
     ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
     : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
 
-  return fn(accounts, arg);
+  try {
+    return fn(accounts, arg);
+  } catch {
+    // manche Builder-Varianten haben Signatur (accounts, args, programId?)
+    return fn(accounts, arg, getTokenMetadataProgramId());
+  }
 }
 function tmMasterEditionV3Instr(accounts, args) {
   const fn = pick(TM, [
@@ -175,9 +214,21 @@ function tmMasterEditionV3Instr(accounts, args) {
     "instructions.createCreateMasterEditionV3Instruction",
     "builders.createCreateMasterEditionV3Instruction",
     "generated.createCreateMasterEditionV3Instruction",
+    "createMasterEditionV3Instruction",
+    "instructions.createMasterEditionV3Instruction",
+    "builders.createMasterEditionV3Instruction",
+    "generated.createMasterEditionV3Instruction",
+    "createMasterEditionV3",
+    "instructions.createMasterEditionV3",
+    "builders.createMasterEditionV3",
+    "generated.createMasterEditionV3",
   ], "function");
-  if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
-  return fn(accounts, args);
+  if (!fn) { logModuleShapeOnce(TM); throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar"); }
+  try {
+    return fn(accounts, args);
+  } catch {
+    return fn(accounts, args, getTokenMetadataProgramId());
+  }
 }
 function tmVerifyCollectionInstr(obj) {
   const fn = pick(TM, [
@@ -189,8 +240,15 @@ function tmVerifyCollectionInstr(obj) {
     "builders.createVerifyCollectionInstruction",
     "generated.createSetAndVerifyCollectionInstruction",
     "generated.createVerifyCollectionInstruction",
+    "setAndVerifyCollection",
+    "verifyCollection",
   ], "function");
-  return fn ? fn(obj) : null;
+  if (!fn) return null;
+  try {
+    return fn(obj);
+  } catch {
+    return fn(obj, getTokenMetadataProgramId());
+  }
 }
 function tmUpdateMetadataV2Instr(accounts, args) {
   const fn = pick(TM, [
@@ -198,9 +256,19 @@ function tmUpdateMetadataV2Instr(accounts, args) {
     "instructions.createUpdateMetadataAccountV2Instruction",
     "builders.createUpdateMetadataAccountV2Instruction",
     "generated.createUpdateMetadataAccountV2Instruction",
+    "updateMetadataAccountV2Instruction",
+    "instructions.updateMetadataAccountV2Instruction",
+    "builders.updateMetadataAccountV2Instruction",
+    "generated.updateMetadataAccountV2Instruction",
+    "updateMetadataAccountV2",
   ], "function");
-  if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
-  return fn(accounts, { updateMetadataAccountArgsV2: args });
+  if (!fn) { logModuleShapeOnce(TM); throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar"); }
+  const argWrapped = { updateMetadataAccountArgsV2: args };
+  try {
+    return fn(accounts, argWrapped);
+  } catch {
+    return fn(accounts, argWrapped, getTokenMetadataProgramId());
+  }
 }
 function tmDeserializeMetadata(data) {
   const Meta = pick(TM, [
@@ -210,6 +278,7 @@ function tmDeserializeMetadata(data) {
   ], "object");
   if (Meta?.deserialize) return Meta.deserialize(data)[0];
   if (Meta?.fromAccountInfo) return Meta.fromAccountInfo({ data })[0];
+  logModuleShapeOnce(TM);
   throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
 }
 
@@ -253,12 +322,13 @@ const setStatus = (t, cls="")=>{
   const el = $("status"); if (!el) return;
   el.className = `status ${cls}`; el.innerHTML = t;
 };
-const log = (msg,obj)=>{
+const logUI = (msg,obj)=>{
   const el=$("log"); if (!el) return;
   const time=new Date().toLocaleTimeString();
   el.textContent += `[${time}] ${msg}${obj?" "+(typeof obj==="string"?obj:JSON.stringify(obj,null,2)):""}\n`;
   el.scrollTop = el.scrollHeight;
 };
+const log = (msg,obj)=>logUI(msg,obj);
 const setSpin = (on)=>{
   const sp=document.querySelector(".spinner");
   const lbl=document.querySelector(".btn-label");
@@ -605,7 +675,7 @@ async function signSendWithRetry(conn, tx, wallet, extraSigner){
   throw new Error("Blockhash wiederholt abgelaufen. Bitte erneut versuchen.");
 }
 
-/* ==================== REPAIR: bestehendes NFT suchen & fixen ==================== */
+/* ==================== REPAIR / helpers ==================== */
 async function findExistingMintByIdForCreator(conn, id){
   await ensureTM();
   const owner = new PublicKey(CFG.CREATOR);
@@ -634,7 +704,6 @@ async function findExistingMintByIdForCreator(conn, id){
   }
   return null;
 }
-
 function buildDesiredDataV2(id){
   return {
     name:  desiredName(id),
@@ -646,7 +715,6 @@ function buildDesiredDataV2(id){
     uses:null
   };
 }
-
 async function ensureMetadataAndCollection(conn, payer, mint, id){
   await ensureTM();
   const tx = new Transaction();
