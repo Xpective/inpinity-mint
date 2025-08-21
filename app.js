@@ -854,10 +854,7 @@ async function doMint(){
       { createMasterEditionArgs: { maxSupply: 0 } }
     ));
 
-    // --- 5) Optional: Authorities entziehen (empfohlen: auf NULL setzen)
-    tx.add(createSetAuthorityInstruction(
-      mint, payer, AuthorityType.MintTokens,    null, []
-    ));
+
     
 
     // --- 6) Collection verifizieren
