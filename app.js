@@ -170,12 +170,31 @@ function tmMasterEditionV3Instr(accounts, args) {
   return fn(accounts, args);
 }
 
-function tmVerifyCollectionInstr(obj) {
-  const fn = TM.createSetAndVerifyCollectionInstruction
-          || TM.instructions?.createSetAndVerifyCollectionInstruction
-          || TM.createVerifyCollectionInstruction
-          || TM.instructions?.createVerifyCollectionInstruction;
-  return fn ? fn(obj) : null;
+function tmVerifyCollectionInstr(obj, sized) {
+  // Sized-Varianten
+  const setAndVerifySized = TM.createSetAndVerifySizedCollectionItemInstruction
+                         || TM.instructions?.createSetAndVerifySizedCollectionItemInstruction;
+  const verifySized       = TM.createVerifySizedCollectionItemInstruction
+                         || TM.instructions?.createVerifySizedCollectionItemInstruction;
+
+  // Unsized-Varianten
+  const setAndVerify = TM.createSetAndVerifyCollectionInstruction
+                    || TM.instructions?.createSetAndVerifyCollectionInstruction;
+  const verify       = TM.createVerifyCollectionInstruction
+                    || TM.instructions?.createVerifyCollectionInstruction;
+
+  if (sized) {
+    // Wir haben die Collection schon im Metadata gesetzt → nur "verify sized"
+    if (verifySized) return verifySized(obj);
+    // Fallback (sollte selten nötig sein)
+    if (verify) return verify(obj);
+    return null;
+  } else {
+    // Für unsized bevorzugen wir "set and verify" (setzt + verifiziert in einem Schritt)
+    if (setAndVerify) return setAndVerify(obj);
+    if (verify) return verify(obj);
+    return null;
+  }
 }
 
 function tmUpdateMetadataV2Instr(accounts, args) {
