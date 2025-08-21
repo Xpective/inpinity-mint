@@ -72,9 +72,9 @@ import {
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 /* ==================== METAPLEX TOKEN METADATA (ESM v2.x) ==================== */
-let IS_SIZED_COLLECTION = false;
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
+let IS_SIZED_COLLECTION = false; // ⚑ neues Flag
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 /* ---- helpers ---- */
@@ -170,7 +170,8 @@ function tmMasterEditionV3Instr(accounts, args) {
   return fn(accounts, args);
 }
 
-function tmVerifyCollectionInstr(obj, sized) {
+// ⚑ neue „smart“ Verify-Auswahl (sized vs. unsized)
+function tmVerifyCollectionInstrSmart(obj, sized) {
   // Sized-Varianten
   const setAndVerifySized = TM.createSetAndVerifySizedCollectionItemInstruction
                          || TM.instructions?.createSetAndVerifySizedCollectionItemInstruction;
@@ -184,13 +185,12 @@ function tmVerifyCollectionInstr(obj, sized) {
                     || TM.instructions?.createVerifyCollectionInstruction;
 
   if (sized) {
-    // Wir haben die Collection schon im Metadata gesetzt → nur "verify sized"
+    // Collection ist im Metadata bereits gesetzt → nur verifizieren
     if (verifySized) return verifySized(obj);
-    // Fallback (sollte selten nötig sein)
-    if (verify) return verify(obj);
+    if (verify) return verify(obj); // Notfall-Fallback
     return null;
   } else {
-    // Für unsized bevorzugen wir "set and verify" (setzt + verifiziert in einem Schritt)
+    // Unsized: „set and verify“ bevorzugt
     if (setAndVerify) return setAndVerify(obj);
     if (verify) return verify(obj);
     return null;
@@ -530,7 +530,6 @@ function renderPreview(id, meta){
   if (meta.seller_fee_basis_points!==undefined && meta.seller_fee_basis_points!==CFG.ROYALTY_BPS) {
     errs.push(`Royalties nicht ${CFG.ROYALTY_BPS/100}%`);
   }
-  // Achtung: JSON-Name sollte "Pi Pyramid #id" sein – sonst Hinweis
   const wantName = desiredName(id);
   if (meta?.name && stripNulls(meta.name) !== wantName) {
     errs.push(`JSON-Name abweichend („${stripNulls(meta.name)}“ ≠ „${wantName}“)`);
@@ -556,16 +555,7 @@ async function fetchAccountInfo(conn, pubkey){
 }
 async function collectionPreflight(conn, payerPk, collectionMintPk){
   await ensureTM();
-    let md;
-  try { md = tmDeserializeMetadata(mdAcc.data); } catch {}
 
-  const name  = stripNulls(md?.data?.name)   || "(unbekannt)";
-  const sym   = stripNulls(md?.data?.symbol) || "";
-  const uri   = stripNulls(md?.data?.uri)    || "";
-
-  // NEU: sized-Flag erkennen
-  IS_SIZED_COLLECTION = !!md?.collectionDetails;
-  log("collection: ok", { name, symbol: sym, uri, sized: IS_SIZED_COLLECTION });
   const mdPda = findMetadataPda(collectionMintPk);
   const edPda = findMasterEditionPda(collectionMintPk);
 
@@ -583,13 +573,15 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
   if (!mdAcc) throw new Error("Collection-Preflight: Metadata PDA nicht gefunden");
   if (!edAcc) throw new Error("Collection-Preflight: MasterEdition PDA nicht gefunden");
 
-  let md;
+  // -> Sized-Flag aus den Collection-Metadaten erkennen
+  let md = null;
   try { md = tmDeserializeMetadata(mdAcc.data); } catch {}
   const name  = stripNulls(md?.data?.name)   || "(unbekannt)";
   const sym   = stripNulls(md?.data?.symbol) || "";
   const uri   = stripNulls(md?.data?.uri)    || "";
+  IS_SIZED_COLLECTION = !!md?.collectionDetails;
 
-  log("collection: ok", { name, symbol: sym, uri });
+  log("collection: ok", { name, symbol: sym, uri, sized: IS_SIZED_COLLECTION });
 
   // ---- zusätzliche Einsicht: collection.json laden (on-chain oder Fallback-CID) ----
   let cj = await fetchJsonMaybe(uri);
@@ -599,11 +591,10 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
         const r = await fetch(cand, { cache: "no-store" });
         if (r.ok) cj = await r.json().catch(()=>null);
       } catch {}
-      if (cj) { console.log("[collection json fallback]", { url: cand, name: cj.name||"", symbol: cj.symbol||"" }); break; }
+      if (cj) { console.log("[collection json]", { url: cand, name: cj.name||"", symbol: cj.symbol||"" }); break; }
     }
   }
-  if (cj) console.log("[collection json]", { name: cj.name||"", symbol: cj.symbol||"", uri: uri || `(cid:${CFG.COLLECTION_JSON_CID})` });
-  else     console.warn("[collection json] nicht ladbar – weder on-chain URI noch CID-Fallback ergab verwertbare JSON.");
+  if (!cj) console.warn("[collection json] nicht ladbar – weder on-chain URI noch CID-Fallback ergab verwertbare JSON.");
 
   return { mdPda, edPda, name, symbol: sym, uri };
 }
@@ -755,7 +746,7 @@ async function ensureMetadataAndCollection(conn, payer, mint, id){
     tx.add(instr);
   }
 
-  const verifyInstr = tmVerifyCollectionInstr({
+  const verifyInstr = tmVerifyCollectionInstrSmart({
     metadata: metadataPda,
     collectionAuthority: payer,
     payer,
@@ -763,7 +754,7 @@ async function ensureMetadataAndCollection(conn, payer, mint, id){
     collectionMint: new PublicKey(CFG.COLLECTION_MINT),
     collection: collMdPda,
     collectionMasterEditionAccount: collEdPda
-  });
+  }, IS_SIZED_COLLECTION);
   if (verifyInstr) tx.add(verifyInstr);
 
   const sig=await signSendWithRetry(conn, tx, phantom);
@@ -856,7 +847,6 @@ async function doMint(){
         mintAuthority: payer,
         payer,
         updateAuthority: payer
-        // systemProgram/rent optional
       },
       {
         name: nftName,
@@ -887,22 +877,21 @@ async function doMint(){
     tx.add(createSetAuthorityInstruction(
       mint, payer, AuthorityType.MintTokens, null, []
     ));
-    // FreezeAuthority NICHT anrühren (der zweite SetAuthority war die Quelle für "owner does not match").
+    // ⚠ FreezeAuthority NICHT anfassen.
 
-    // --- 6) Collection verifizieren
-    // --- 6) Collection verifizieren
-const collMdPda = findMetadataPda(collectionMint);
-const collEdPda = findMasterEditionPda(collectionMint);
-const verifyInstr = tmVerifyCollectionInstrSmart({
-  metadata: metadataPda,
-  collectionAuthority: payer,
-  payer,
-  updateAuthority: payer,
-  collectionMint,
-  collection: collMdPda,
-  collectionMasterEditionAccount: collEdPda
-}, IS_SIZED_COLLECTION);
-if (verifyInstr) tx.add(verifyInstr);
+    // --- 6) Collection verifizieren (Sized vs. Unsized)
+    const collMdPda = findMetadataPda(collectionMint);
+    const collEdPda = findMasterEditionPda(collectionMint);
+    const verifyInstr = tmVerifyCollectionInstrSmart({
+      metadata: metadataPda,
+      collectionAuthority: payer,
+      payer,
+      updateAuthority: payer,
+      collectionMint,
+      collection: collMdPda,
+      collectionMasterEditionAccount: collEdPda
+    }, IS_SIZED_COLLECTION);
+    if (verifyInstr) tx.add(verifyInstr);
 
     setStatus("Bitte im Wallet signieren…","info");
     const signature=await signSendWithRetry(conn, tx, wallet, mintKeypair);
@@ -937,6 +926,7 @@ function userFriendly(msg){
   if (/insufficient funds|insufficient|0x7d0/i.test(msg)) return "Unzureichendes SOL-Guthaben.";
   if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
   if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
+  if (/custom program error: 0x66/i.test(msg)) return "Sized-Collection: falsche Verify-Instruction (jetzt behoben).";
   if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
   return msg;
 }
@@ -978,7 +968,7 @@ async function onShowMyMints() {
 }
 
 /* ==================== NETWORK GUARD (Mainnet Badge) ==================== */
-const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"; // belasse so, wenn deine RPCs das so melden
 
 function upsertNetBadge(text, ok){
   let b=document.getElementById("netBadge");
@@ -1088,7 +1078,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
 
   try {
     const conn = await ensureConnection();
-    await assertMainnet(conn); // <<< Mainnet-Proof + Badge
+    await assertMainnet(conn); // Mainnet-Proof + Badge
     await ensureTM();
     await softAssertCollection(conn, new PublicKey(CFG.COLLECTION_MINT));
   } catch (e) {
