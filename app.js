@@ -3,7 +3,7 @@
    =========================================== */
 
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v25";
+const BUILD_TAG = "mint-v26";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -73,21 +73,49 @@ let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
+/* small util: safe getter for nested paths */
+function getPath(obj, path) {
+  return path.split(".").reduce((o,k)=>o?.[k], obj);
+}
+function pick(obj, pathList, type = "function") {
+  for (const p of pathList) {
+    const v = getPath(obj, p);
+    if ((type === "function" && typeof v === "function") ||
+        (type === "object"   && typeof v === "object" && v)) {
+      return v;
+    }
+  }
+  return null;
+}
+
 async function loadTM() {
   const sources = [
-    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020",
-    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0?bundle&target=es2020",
+    // zuerst „plain“ ESM (ohne bundle)
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0",
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0",
+    // dann Bundle-Fallbacks
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?target=es2020&bundle",
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0?target=es2020&bundle",
   ];
   let lastErr = null;
   for (const url of sources) {
     try {
       const mod = await import(/* @vite-ignore */ url);
-      TM = mod;
 
-      // Program-ID sicherstellen (nur lesen!)
-      const pidStr =
-        (TM.PROGRAM_ID && (TM.PROGRAM_ID.toString?.() ?? String(TM.PROGRAM_ID))) || FALLBACK_TM_PID;
-      TOKEN_METADATA_PROGRAM_ID = new PublicKey(pidStr);
+      // esm.sh kann je nach Variante ein default‑Namespace liefern
+      TM = (mod && typeof mod.default === "object") ? mod.default : mod;
+
+      // PROGRAM_ID lesen (verschiedene Pfade)
+      const pidRaw =
+           TM?.PROGRAM_ID
+        || TM?.constants?.PROGRAM_ID
+        || TM?.programId
+        || TM?.TOKEN_METADATA_PROGRAM_ID
+        || FALLBACK_TM_PID;
+
+      TOKEN_METADATA_PROGRAM_ID = new PublicKey(
+        typeof pidRaw?.toString === "function" ? pidRaw.toString() : String(pidRaw)
+      );
 
       console.log("[vendor] mpl-token-metadata ready (ESM)", {
         programId: TOKEN_METADATA_PROGRAM_ID.toString(),
@@ -113,51 +141,75 @@ function getTokenMetadataProgramId() {
   return TOKEN_METADATA_PROGRAM_ID;
 }
 
-/* ========== Thin wrappers (lesen nur aus TM / TM.instructions) ========== */
+/* ========== Thin wrappers: NUR LESEN aus möglichen Pfaden ========== */
 function tmCreateMetadataInstr(accounts, dataV2Like) {
-  const fn =
-      TM?.createCreateMetadataAccountV2Instruction
-   || TM?.createCreateMetadataAccountV3Instruction
-   || TM?.instructions?.createCreateMetadataAccountV2Instruction
-   || TM?.instructions?.createCreateMetadataAccountV3Instruction;
+  const fn = pick(TM, [
+    // top-level
+    "createCreateMetadataAccountV3Instruction",
+    "createCreateMetadataAccountV2Instruction",
+    // unter namespaces
+    "instructions.createCreateMetadataAccountV3Instruction",
+    "instructions.createCreateMetadataAccountV2Instruction",
+    "builders.createCreateMetadataAccountV3Instruction",
+    "builders.createCreateMetadataAccountV2Instruction",
+    "generated.createCreateMetadataAccountV3Instruction",
+    "generated.createCreateMetadataAccountV2Instruction",
+  ], "function");
   if (!fn) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
 
-  const isV3 =
-      (fn?.name?.includes?.("V3"))
-   || !!TM?.createCreateMetadataAccountV3Instruction
-   || !!TM?.instructions?.createCreateMetadataAccountV3Instruction;
+  const hasV3 =
+       !!pick(TM, ["createCreateMetadataAccountV3Instruction",
+                   "instructions.createCreateMetadataAccountV3Instruction",
+                   "builders.createCreateMetadataAccountV3Instruction",
+                   "generated.createCreateMetadataAccountV3Instruction"], "function");
 
-  const arg = isV3
+  const arg = hasV3
     ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
     : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
 
   return fn(accounts, arg);
 }
 function tmMasterEditionV3Instr(accounts, args) {
-  const fn =
-      TM?.createCreateMasterEditionV3Instruction
-   || TM?.instructions?.createCreateMasterEditionV3Instruction;
+  const fn = pick(TM, [
+    "createCreateMasterEditionV3Instruction",
+    "instructions.createCreateMasterEditionV3Instruction",
+    "builders.createCreateMasterEditionV3Instruction",
+    "generated.createCreateMasterEditionV3Instruction",
+  ], "function");
   if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
   return fn(accounts, args);
 }
 function tmVerifyCollectionInstr(obj) {
-  const fn =
-      TM?.createSetAndVerifyCollectionInstruction
-   || TM?.createVerifyCollectionInstruction
-   || TM?.instructions?.createSetAndVerifyCollectionInstruction
-   || TM?.instructions?.createVerifyCollectionInstruction;
+  const fn = pick(TM, [
+    "createSetAndVerifyCollectionInstruction",
+    "createVerifyCollectionInstruction",
+    "instructions.createSetAndVerifyCollectionInstruction",
+    "instructions.createVerifyCollectionInstruction",
+    "builders.createSetAndVerifyCollectionInstruction",
+    "builders.createVerifyCollectionInstruction",
+    "generated.createSetAndVerifyCollectionInstruction",
+    "generated.createVerifyCollectionInstruction",
+  ], "function");
   return fn ? fn(obj) : null;
 }
 function tmUpdateMetadataV2Instr(accounts, args) {
-  const fn =
-      TM?.createUpdateMetadataAccountV2Instruction
-   || TM?.instructions?.createUpdateMetadataAccountV2Instruction;
+  const fn = pick(TM, [
+    "createUpdateMetadataAccountV2Instruction",
+    "instructions.createUpdateMetadataAccountV2Instruction",
+    "builders.createUpdateMetadataAccountV2Instruction",
+    "generated.createUpdateMetadataAccountV2Instruction",
+  ], "function");
   if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
   return fn(accounts, { updateMetadataAccountArgsV2: args });
 }
 function tmDeserializeMetadata(data) {
-  if (TM?.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
-  if (TM?.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
+  const Meta = pick(TM, [
+    "Metadata",
+    "accounts.Metadata",
+    "generated.Metadata"
+  ], "object");
+  if (Meta?.deserialize) return Meta.deserialize(data)[0];
+  if (Meta?.fromAccountInfo) return Meta.fromAccountInfo({ data })[0];
   throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
 }
 
@@ -619,7 +671,7 @@ async function ensureMetadataAndCollection(conn, payer, mint, id){
    || (md.data?.creators?.[0]?.share ?? 0)!==100;
 
   if (needUpdate){
-    tx.add(tmUpdateMetadataV2Instr(
+    const instr = tmUpdateMetadataV2Instr(
       { metadata: metadataPda, updateAuthority: payer },
       {
         data: want,
@@ -627,7 +679,8 @@ async function ensureMetadataAndCollection(conn, payer, mint, id){
         primarySaleHappened: md.primarySaleHappened ?? null,
         isMutable: md.isMutable ?? true
       }
-    ));
+    );
+    tx.add(instr);
   }
 
   const verifyInstr = tmVerifyCollectionInstr({
@@ -712,7 +765,7 @@ async function doMint(){
     const masterEditionPda=findMasterEditionPda(mint);
 
     // 2) Create Metadata
-    tx.add(tmCreateMetadataInstr(
+    const cmInstr = tmCreateMetadataInstr(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
       {
         name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
@@ -720,13 +773,15 @@ async function doMint(){
         collection:{ key:collectionMint, verified:false },
         uses:null
       }
-    ));
+    );
+    tx.add(cmInstr);
 
     // 3) Create Master Edition V3
-    tx.add(tmMasterEditionV3Instr(
+    const meInstr = tmMasterEditionV3Instr(
       { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
       { createMasterEditionArgs:{ maxSupply:0 } }
-    ));
+    );
+    tx.add(meInstr);
 
     // 4) ATA anlegen + 1 Token minten
     const ata=await getAssociatedTokenAddress(mint,payer,false,TOKEN_PROGRAM_ID,ASSOCIATED_TOKEN_PROGRAM_ID);
@@ -754,10 +809,11 @@ async function doMint(){
 
     // 7) Bei Fremd-Mint: Update-Authority → CREATOR
     if (!isSelf){
-      tx.add(tmUpdateMetadataV2Instr(
+      const updInstr = tmUpdateMetadataV2Instr(
         { metadata: metadataPda, updateAuthority: payer },
         { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
-      ));
+      );
+      tx.add(updInstr);
     }
 
     setStatus("Bitte im Wallet signieren…","info");
@@ -889,7 +945,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
 
   try {
     const conn = await ensureConnection();
-    await ensureTM(); // lädt Metaplex ESM + setzt PID
+    await ensureTM();
     await softAssertCollection(conn, new PublicKey(CFG.COLLECTION_MINT));
   } catch (e) {
     log("collection preflight at boot failed", String(e?.message||e));
