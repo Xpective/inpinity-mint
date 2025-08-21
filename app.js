@@ -816,94 +816,97 @@ async function doMint(){
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
 
-    // 1) Mint Account + InitializeMint (Authority = payer, temporär)
-    const mintKeypair=Keypair.generate(); const mint=mintKeypair.publicKey;
+// --- 1) Mint-Account + InitializeMint (Authority = payer, temporär)
+const mintKeypair = Keypair.generate();
+const mint = mintKeypair.publicKey;
 
-    const rentLamports=await getMinimumBalanceForRentExemptMint(conn);
-    tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
-    tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
+const rentLamports = await getMinimumBalanceForRentExemptMint(connection || await ensureConnection());
+built.add(SystemProgram.createAccount({
+  fromPubkey: payer,
+  newAccountPubkey: mint,
+  space: MINT_SIZE,
+  lamports: rentLamports,
+  programId: TOKEN_PROGRAM_ID
+}));
+built.add(createInitializeMint2Instruction(mint, 0, payer, payer));
 
-    // PDAs
-    const metadataPda=findMetadataPda(mint);
-    const masterEditionPda=findMasterEditionPda(mint);
+// --- 2) ATA anlegen + genau 1 Token minten (WICHTIG: vor MasterEdition!)
+const ata = await getAssociatedTokenAddress(
+  mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+);
+const ataInfo = await conn.getAccountInfo(ata);
+if (!ataInfo) {
+  built.add(createAssociatedTokenAccountInstruction(payer, ata, payer, mint));
+}
+built.add(createMintToInstruction(mint, ata, payer, 1));
 
-    // 2) Create Metadata
-    const cmInstr = tmCreateMetadataInstr(
-      { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
-      {
-        name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
-        creators:[{ address:creatorPk, verified:isSelf, share:100 }],
-        collection:{ key:collectionMint, verified:false },
-        uses:null
-      }
-    );
-    tx.add(cmInstr);
-
-    // 3) Create Master Edition V3
-    const meInstr = tmMasterEditionV3Instr(
-      { edition:masterEditionPda, mint, updateAuthority:payer, mintAuthority:payer, payer, metadata:metadataPda },
-      { createMasterEditionArgs:{ maxSupply:0 } }
-    );
-    tx.add(meInstr);
-
-    // 4) ATA anlegen + 1 Token minten
-    const ata=await getAssociatedTokenAddress(mint,payer,false,TOKEN_PROGRAM_ID,ASSOCIATED_TOKEN_PROGRAM_ID);
-    const ataInfo=await conn.getAccountInfo(ata);
-    if (!ataInfo) tx.add(createAssociatedTokenAccountInstruction(payer,ata,payer,mint));
-    tx.add(createMintToInstruction(mint,ata,payer,1));
-
-    // 5) SetAuthority → MasterEdition (mintTokens + freezeAccount)
-    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.MintTokens,    masterEditionPda, []));
-    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.FreezeAccount, masterEditionPda, []));
-
-    // 6) Verify Collection
-    const collMdPda  = findMetadataPda(collectionMint);
-    const collEdPda  = findMasterEditionPda(collectionMint);
-    const verifyInstr = tmVerifyCollectionInstr({
-      metadata: metadataPda,
-      collectionAuthority: payer,
-      payer,
-      updateAuthority: payer,
-      collectionMint: collectionMint,
-      collection: collMdPda,
-      collectionMasterEditionAccount: collEdPda
-    });
-    if (verifyInstr) tx.add(verifyInstr);
-
-    // 7) Bei Fremd-Mint: Update-Authority → CREATOR
-    if (!isSelf){
-      const updInstr = tmUpdateMetadataV2Instr(
-        { metadata: metadataPda, updateAuthority: payer },
-        { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
-      );
-      tx.add(updInstr);
-    }
-
-    setStatus("Bitte im Wallet signieren…","info");
-    const signature=await signSendWithRetry(conn, tx, wallet, mintKeypair);
-
-    log("sent",{signature});
-    const link=`https://solscan.io/tx/${signature}`;
-    setStatus(
-      `✅ Mint erfolgreich! <a class="link" href="${link}" target="_blank" rel="noopener">Transaktion ansehen</a>
-       <button id="copyTx" class="btn-mini">Copy Tx</button>`,
-      "ok"
-    );
-    setTimeout(()=>{ const c=document.getElementById("copyTx"); if (c) c.onclick=()=>navigator.clipboard.writeText(signature); },0);
-
-    // Registry
-    try { await recordMint(id, mint.toBase58(), payer.toBase58(), signature); } catch {}
-
-    await markClaimed(id); claimedSet.add(id); recomputeAvailable();
-    await setNextFreeId(); await updateBalance();
-
-  }catch(e){ handleError("Mint/Repair fehlgeschlagen:", e);
-  }finally{
-    setSpin(false);
-    const btn=$("mintBtn");
-    if (btn){ btn.disabled=false; const lbl=btn.querySelector(".btn-label"); if (lbl&&originalBtnText) lbl.textContent=originalBtnText; }
-    inFlight=false;
+// --- 3) Metadata anlegen
+const metadataPda = findMetadataPda(mint);
+built.add(tmCreateMetadataInstr(
+  {
+    metadata: metadataPda,
+    mint,
+    mintAuthority: payer,
+    payer,
+    updateAuthority: payer,
+    systemProgram: SystemProgram.programId,
+    rent: SYSVAR_RENT_PUBKEY
+  },
+  {
+    name: nftName,
+    symbol: "InPi",
+    uri: nftUri,
+    sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+    creators: [{ address: creatorPk, verified: isSelf, share: 100 }],
+    collection: { key: collectionMint, verified: false },
+    uses: null
   }
+));
+
+// --- 4) Master Edition V3 (jetzt erlaubt – supply = 1)
+const masterEditionPda = findMasterEditionPda(mint);
+built.add(tmMasterEditionV3Instr(
+  {
+    edition: masterEditionPda,
+    mint,
+    updateAuthority: payer,
+    mintAuthority: payer,
+    payer,
+    metadata: metadataPda,
+    systemProgram: SystemProgram.programId
+  },
+  { createMasterEditionArgs: { maxSupply: 0 } }
+));
+
+// --- 5) Optional: Authorities entziehen (empfohlen: auf NULL setzen)
+built.add(createSetAuthorityInstruction(
+  mint, payer, AuthorityType.MintTokens,    null /* = nobody */, []
+));
+built.add(createSetAuthorityInstruction(
+  mint, payer, AuthorityType.FreezeAccount, null /* = nobody */, []
+));
+
+// --- 6) Collection verifizieren
+const collMdPda = findMetadataPda(collectionMint);
+const collEdPda = findMasterEditionPda(collectionMint);
+const verifyInstr = tmVerifyCollectionInstr({
+  metadata: metadataPda,
+  collectionAuthority: payer,
+  payer,
+  updateAuthority: payer,
+  collectionMint,
+  collection: collMdPda,
+  collectionMasterEditionAccount: collEdPda,
+  systemProgram: SystemProgram.programId
+});
+if (verifyInstr) built.add(verifyInstr);
+
+// --- 7) Bei Fremd-Mint Update-Authority → CREATOR
+if (!isSelf) {
+  built.add(tmUpdateMetadataV2Instr(
+    { metadata: metadataPda, updateAuthority: payer, systemProgram: SystemProgram.programId, rent: SYSVAR_RENT_PUBKEY },
+    { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
+  ));
 }
 
 /* ==================== ERROR HANDLING ==================== */
