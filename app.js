@@ -67,14 +67,14 @@ import {
   createAssociatedTokenAccountInstruction,
   createInitializeMint2Instruction,
   createMintToInstruction,
-  createSetAuthorityInstruction,
-  AuthorityType,
+  // createSetAuthorityInstruction,  // ← entfällt
+  // AuthorityType,                  // ← entfällt
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 /* ==================== METAPLEX TOKEN METADATA (ESM v2.x) ==================== */
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
-let IS_SIZED_COLLECTION = false; // ⚑ neues Flag
+let IS_SIZED_COLLECTION = false;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 /* ---- helpers ---- */
@@ -89,7 +89,6 @@ function pickFrom(mod, paths, kind="function") {
 const stripNulls = (s) => (typeof s === "string" ? s.replace(/\0+$/g, "") : s);
 
 async function loadTM() {
-  // Klassische Web3-API (v2.x) – keine UMI 3.x laden!
   const sources = [
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.7.0?target=es2020&bundle",
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1?target=es2020&bundle",
@@ -102,7 +101,6 @@ async function loadTM() {
       const mod = await import(/* @vite-ignore */ url);
       const m = (mod && typeof mod.default === "object") ? mod.default : mod;
 
-      // Minimal-Shape prüfen
       if (!(
         m?.createCreateMetadataAccountV3Instruction ||
         m?.instructions?.createCreateMetadataAccountV3Instruction ||
@@ -170,27 +168,23 @@ function tmMasterEditionV3Instr(accounts, args) {
   return fn(accounts, args);
 }
 
-// ⚑ neue „smart“ Verify-Auswahl (sized vs. unsized)
+// sized vs. unsized Verify schlau auswählen
 function tmVerifyCollectionInstrSmart(obj, sized) {
-  // Sized-Varianten
   const setAndVerifySized = TM.createSetAndVerifySizedCollectionItemInstruction
                          || TM.instructions?.createSetAndVerifySizedCollectionItemInstruction;
   const verifySized       = TM.createVerifySizedCollectionItemInstruction
                          || TM.instructions?.createVerifySizedCollectionItemInstruction;
 
-  // Unsized-Varianten
   const setAndVerify = TM.createSetAndVerifyCollectionInstruction
                     || TM.instructions?.createSetAndVerifyCollectionInstruction;
   const verify       = TM.createVerifyCollectionInstruction
                     || TM.instructions?.createVerifyCollectionInstruction;
 
   if (sized) {
-    // Collection ist im Metadata bereits gesetzt → nur verifizieren
     if (verifySized) return verifySized(obj);
-    if (verify) return verify(obj); // Notfall-Fallback
+    if (verify) return verify(obj);
     return null;
   } else {
-    // Unsized: „set and verify“ bevorzugt
     if (setAndVerify) return setAndVerify(obj);
     if (verify) return verify(obj);
     return null;
@@ -573,7 +567,6 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
   if (!mdAcc) throw new Error("Collection-Preflight: Metadata PDA nicht gefunden");
   if (!edAcc) throw new Error("Collection-Preflight: MasterEdition PDA nicht gefunden");
 
-  // -> Sized-Flag aus den Collection-Metadaten erkennen
   let md = null;
   try { md = tmDeserializeMetadata(mdAcc.data); } catch {}
   const name  = stripNulls(md?.data?.name)   || "(unbekannt)";
@@ -583,7 +576,6 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
 
   log("collection: ok", { name, symbol: sym, uri, sized: IS_SIZED_COLLECTION });
 
-  // ---- zusätzliche Einsicht: collection.json laden (on-chain oder Fallback-CID) ----
   let cj = await fetchJsonMaybe(uri);
   if (!cj && CFG.COLLECTION_JSON_CID) {
     for (const cand of collectionCidHttpCandidates()) {
@@ -651,6 +643,7 @@ async function signSendWithRetry(conn, builtTx, wallet, extraSigner){
     catch (e) { throw new Error(e?.message || "Signierung abgebrochen/fehlgeschlagen"); }
 
     try{
+      // Preflight gern aktiviert lassen – mit dem Fix sollte sie nun nicht mehr meckern
       const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight:false, preflightCommitment:"confirmed" });
       await conn.confirmTransaction({ signature:sig, blockhash, lastValidBlockHeight }, "confirmed");
       return sig;
@@ -830,7 +823,7 @@ async function doMint(){
     }));
     tx.add(createInitializeMint2Instruction(mint, 0, payer, payer));
 
-    // --- 2) ATA anlegen + genau 1 Token minten (WICHTIG: vor MasterEdition!)
+    // --- 2) ATA anlegen + genau 1 Token minten
     const ata = await getAssociatedTokenAddress(
       mint, payer, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
     );
@@ -859,7 +852,7 @@ async function doMint(){
       }
     ));
 
-    // --- 4) Master Edition V3 (jetzt erlaubt – supply = 1)
+    // --- 4) Master Edition V3
     const masterEditionPda = findMasterEditionPda(mint);
     tx.add(tmMasterEditionV3Instr(
       {
@@ -873,11 +866,7 @@ async function doMint(){
       { createMasterEditionArgs: { maxSupply: 0 } }
     ));
 
-    // --- 5) Mint-Authority revoken (wichtig: NACH MasterEdition)
-    tx.add(createSetAuthorityInstruction(
-      mint, payer, AuthorityType.MintTokens, null, []
-    ));
-    // ⚠ FreezeAuthority NICHT anfassen.
+    // --- 5) KEIN explizites revoke mehr! (vermeidet 0x4 „owner does not match“)
 
     // --- 6) Collection verifizieren (Sized vs. Unsized)
     const collMdPda = findMetadataPda(collectionMint);
@@ -927,6 +916,7 @@ function userFriendly(msg){
   if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
   if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
   if (/custom program error: 0x66/i.test(msg)) return "Sized-Collection: falsche Verify-Instruction (jetzt behoben).";
+  if (/custom program error: 0x4/i.test(msg)) return "Mint-Authority war bereits widerrufen – zusätzlicher Revoke entfernt.";
   if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
   return msg;
 }
@@ -968,7 +958,7 @@ async function onShowMyMints() {
 }
 
 /* ==================== NETWORK GUARD (Mainnet Badge) ==================== */
-const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"; // belasse so, wenn deine RPCs das so melden
+const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 
 function upsertNetBadge(text, ok){
   let b=document.getElementById("netBadge");
@@ -1078,7 +1068,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
 
   try {
     const conn = await ensureConnection();
-    await assertMainnet(conn); // Mainnet-Proof + Badge
+    await assertMainnet(conn);
     await ensureTM();
     await softAssertCollection(conn, new PublicKey(CFG.COLLECTION_MINT));
   } catch (e) {
