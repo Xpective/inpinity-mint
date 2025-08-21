@@ -90,10 +90,10 @@ const stripNulls = (s) => (typeof s === "string" ? s.replace(/\0+$/g, "") : s);
 async function loadTM() {
   // Klassische Web3-API (v2.x) – keine UMI 3.x laden!
   const sources = [
-    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1?target=es2020&bundle",
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.7.0?target=es2020&bundle",
-    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1",
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1?target=es2020&bundle",
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.7.0",
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1",
   ];
   let lastErr = null;
   for (const url of sources) {
@@ -858,9 +858,7 @@ async function doMint(){
     tx.add(createSetAuthorityInstruction(
       mint, payer, AuthorityType.MintTokens,    null, []
     ));
-    tx.add(createSetAuthorityInstruction(
-      mint, payer, AuthorityType.FreezeAccount, null, []
-    ));
+    
 
     // --- 6) Collection verifizieren
     const collMdPda = findMetadataPda(collectionMint);
