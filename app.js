@@ -3,7 +3,7 @@
    =========================================== */
 
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v28";
+const BUILD_TAG = "mint-v29";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -87,7 +87,7 @@ function pickFrom(mod, paths, kind="function") {
 }
 
 async function loadTM() {
-  // Nur klassische Web3-API (v2.x) – keine UMI 3.x laden!
+  // Nur klassische Web3-API (v2.x) – N I C H T die Umi-only 3.x laden!
   const sources = [
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.10.6?target=es2020&bundle",
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1?target=es2020&bundle",
@@ -546,7 +546,7 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
 
   log("collection: ok", { name, symbol: sym, uri });
 
-  // ---- zusätzliche Einsicht: collection.json laden (on-chain oder Fallback-CID) ----
+  // ---- collection.json laden (on-chain oder Fallback-CID) ----
   let cj = await fetchJsonMaybe(uri);
   if (!cj && CFG.COLLECTION_JSON_CID) {
     for (const cand of collectionCidHttpCandidates()) {
@@ -592,8 +592,12 @@ async function setSmartPriority(tx, conn){
 async function signSendWithRetry(conn, tx, wallet, extraSigner){
   if (extraSigner) tx.partialSign(extraSigner);
   for (let attempt=0; attempt<3; attempt++){
-    const {blockhash,lastValidBlockHeight}=await conn.getLatestBlockhash();
-    tx.recentBlockhash=blockhash; tx.feePayer=wallet.publicKey;
+    // *** Wichtig: frischen Blockhash holen (hat NICHTS mit deiner Collection zu tun) ***
+    const {blockhash,lastValidBlockHeight}=await conn.getLatestBlockhash("finalized");
+    tx.recentBlockhash = blockhash;
+    // web3.js v1.95+ unterstützt lastValidBlockHeight im confirm-Aufruf:
+    tx.feePayer = wallet.publicKey;
+
     const signed=await wallet.signTransaction(tx);
 
     const sim=await conn.simulateTransaction(signed,{sigVerify:false,commitment:"processed"});
@@ -602,7 +606,7 @@ async function signSendWithRetry(conn, tx, wallet, extraSigner){
 
     try{
       const sig=await conn.sendRawTransaction(signed.serialize(),{skipPreflight:false});
-      await conn.confirmTransaction({signature:sig,blockhash,lastValidBlockHeight},"confirmed");
+      await conn.confirmTransaction({signature:sig, blockhash, lastValidBlockHeight},"confirmed");
       return sig;
     }catch(e){
       const msg=e?.message||"";
@@ -645,7 +649,7 @@ async function findExistingMintByIdForCreator(conn, id){
 function buildDesiredDataV2(id){
   return {
     name:  desiredName(id),
-    symbol:"inpi",
+    symbol:"InPi",                     // <<—— Symbol exakt so
     uri:   uriForId(id),
     sellerFeeBasisPoints: CFG.ROYALTY_BPS,
     creators:[{ address:new PublicKey(CFG.CREATOR), verified:true, share:100 }],
@@ -689,21 +693,27 @@ async function ensureMetadataAndCollection(conn, payer, mint, id){
     tx.add(instr);
   }
 
-  const verifyInstr = tmVerifyCollectionInstr({
-    metadata: metadataPda,
-    collectionAuthority: payer,
-    payer,
-    updateAuthority: payer,
-    collectionMint: new PublicKey(CFG.COLLECTION_MINT),
-    collection: collMdPda,
-    collectionMasterEditionAccount: collEdPda
-  });
-  if (verifyInstr) tx.add(verifyInstr);
+  // Verify nur, wenn der aktuelle Signer die Collection-Authority ist
+  const isSelf = phantom?.publicKey?.toBase58?.() === CFG.CREATOR;
+  if (isSelf) {
+    const verifyInstr = tmVerifyCollectionInstr({
+      metadata: metadataPda,
+      collectionAuthority: payer,
+      payer,
+      updateAuthority: payer,
+      collectionMint: new PublicKey(CFG.COLLECTION_MINT),
+      collection: collMdPda,
+      collectionMasterEditionAccount: collEdPda
+    });
+    if (verifyInstr) tx.add(verifyInstr);
+  } else {
+    log("verify skipped", "Minter ist nicht Collection-Authority (Creator)");
+  }
 
   const sig=await signSendWithRetry(conn, tx, phantom);
   log("repair ok",{signature:sig, mint: mint.toBase58()});
   setStatus(
-    `🔧 Repair/Verify erfolgreich. <a class="link" href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">Transaktion ansehen</a>`,
+    `🔧 Repair/Verify erfolgreich (falls möglich). <a class="link" href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">Transaktion ansehen</a>`,
     "ok"
   );
 }
@@ -749,7 +759,8 @@ async function doMint(){
     /* === FALL B: Normaler Mint === */
     await softAssertCollection(conn, collectionMint);
 
-    const nftName=desiredName(id); const nftUri=uriForId(id);
+    const nftName=desiredName(id);
+    const nftUri=uriForId(id);
 
     const tx=new Transaction();
     await setSmartPriority(tx, conn);
@@ -763,18 +774,27 @@ async function doMint(){
     const mintKeypair=Keypair.generate(); const mint=mintKeypair.publicKey;
 
     const rentLamports=await getMinimumBalanceForRentExemptMint(conn);
-    tx.add(SystemProgram.createAccount({fromPubkey:payer,newAccountPubkey:mint,space:MINT_SIZE,lamports:rentLamports,programId:TOKEN_PROGRAM_ID}));
+    tx.add(SystemProgram.createAccount({
+      fromPubkey:payer,
+      newAccountPubkey:mint,
+      space:MINT_SIZE,
+      lamports:rentLamports,
+      programId:TOKEN_PROGRAM_ID
+    }));
     tx.add(createInitializeMint2Instruction(mint,0,payer,payer));
 
     // PDAs
     const metadataPda=findMetadataPda(mint);
     const masterEditionPda=findMasterEditionPda(mint);
 
-    // 2) Create Metadata
+    // 2) Create Metadata (Symbol exakt "InPi")
     const cmInstr = tmCreateMetadataInstr(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
       {
-        name:nftName, symbol:"inpi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
+        name: nftName,
+        symbol: "InPi",
+        uri: nftUri,
+        sellerFeeBasisPoints: CFG.ROYALTY_BPS,
         creators:[{ address:creatorPk, verified:isSelf, share:100 }],
         collection:{ key:collectionMint, verified:false },
         uses:null
@@ -799,21 +819,25 @@ async function doMint(){
     tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.MintTokens,    masterEditionPda, []));
     tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.FreezeAccount, masterEditionPda, []));
 
-    // 6) Verify Collection
-    const collMdPda  = findMetadataPda(collectionMint);
-    const collEdPda  = findMasterEditionPda(collectionMint);
-    const verifyInstr = tmVerifyCollectionInstr({
-      metadata: metadataPda,
-      collectionAuthority: payer,
-      payer,
-      updateAuthority: payer,
-      collectionMint: collectionMint,
-      collection: collMdPda,
-      collectionMasterEditionAccount: collEdPda
-    });
-    if (verifyInstr) tx.add(verifyInstr);
+    // 6) Verify Collection NUR wenn Creator selbst mintet
+    if (isSelf){
+      const collMdPda  = findMetadataPda(collectionMint);
+      const collEdPda  = findMasterEditionPda(collectionMint);
+      const verifyInstr = tmVerifyCollectionInstr({
+        metadata: metadataPda,
+        collectionAuthority: payer,   // Signer = Creator
+        payer,
+        updateAuthority: payer,
+        collectionMint: collectionMint,
+        collection: collMdPda,
+        collectionMasterEditionAccount: collEdPda
+      });
+      if (verifyInstr) tx.add(verifyInstr);
+    } else {
+      log("verify deferred","Minter ist nicht Creator – Verify später durch Creator möglich");
+    }
 
-    // 7) Bei Fremd-Mint: Update-Authority → CREATOR
+    // 7) Bei Fremd-Mint: Update-Authority → CREATOR (damit Creator später verifizieren/updaten kann)
     if (!isSelf){
       const updInstr = tmUpdateMetadataV2Instr(
         { metadata: metadataPda, updateAuthority: payer },
@@ -854,6 +878,7 @@ function userFriendly(msg){
   if (/user rejected|reject|denied|Abgelehnt/i.test(msg)) return "Signierung abgebrochen";
   if (/insufficient funds|insufficient|0x7d0/i.test(msg)) return "Unzureichendes SOL-Guthaben.";
   if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
+  if (/Transaction recentBlockhash required/i.test(msg)) return "Interner Sync. Bitte nochmal auf „Mint“ klicken.";
   if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
   if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
   return msg;
