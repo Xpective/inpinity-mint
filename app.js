@@ -10,6 +10,11 @@ const CFG = {
   RPCS: [
     "https://api.inpinity.online/rpc",
     "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc",
+    
+    // CDN-Fallbacks optional
+  "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
+  "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
+
   ],
   CLAIMS: [
     "https://api.inpinity.online/claims",
