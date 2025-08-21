@@ -431,40 +431,62 @@ async function fetchFirst(metaUrls) {
 }
 
 /* ==================== PREVIEW ==================== */
-const previewCache={};
-async function updatePreview(){
+const previewCache = {};
+async function updatePreview() {
+  // 1) ID clampen + UI vorbereiten
+  const clampId = (v) => { v = Number(v) || 0; return Math.max(0, Math.min(CFG.MAX_INDEX, v)); };
+  const id = clampId($("tokenId").value || 0);
+  $("tokenId").value = String(id);
+
+  $("previewUri").textContent = uriForId(id);
+  $("uriStatus").textContent = "prüfe URI …";
+  previewReady = false;
+  applyMintButtonState();
+
+  const media = $("mediaBox");
+  const metaBox = $("metaBox");
+  media.innerHTML = '<span class="muted">Lade Vorschau…</span>';
+  metaBox.innerHTML = "";
+
+  // 2) Cache-Hit?
+  if (previewCache[id]) {
+    renderPreview(id, previewCache[id]);
+    previewReady = true;
+    applyMintButtonState();
+    return;
+  }
+
+  // 3) Von IPFS holen (mit Debug-Logs)
   const urls = CFG.GATEWAYS.map(g => `${g}/${CFG.JSON_BASE_CID}/${id}.json`);
-log("meta try", { urls });
-let meta = null;
-try { meta = await fetchFirst(urls); } catch {}
-  const clampId=(v)=>{ v=Number(v)||0; return Math.max(0, Math.min(CFG.MAX_INDEX, v)); };
-  const id = clampId($("tokenId").value||0);
-  $("tokenId").value=String(id);
-  
-  
-  $("previewUri").textContent=uriForId(id);
-  $("uriStatus").textContent="prüfe URI …";
-  previewReady=false; applyMintButtonState();
-  
-  const media=$("mediaBox"); const metaBox=$("metaBox");
-  media.innerHTML='<span class="muted">Lade Vorschau…</span>'; metaBox.innerHTML="";
+  log("meta try", { urls });
 
-  if (previewCache[id]){ renderPreview(id, previewCache[id]); previewReady=true; applyMintButtonState(); return; }
+  let meta = null;
+  try {
+    meta = await fetchFirst(urls);
+  } catch (e) {
+    log("meta all failed", String(e?.message || e));
+  }
 
-  let meta=null;
-  try{ meta=await fetchFirst(CFG.GATEWAYS.map(g=>`${g}/${CFG.JSON_BASE_CID}/${id}.json`)); }catch{}
-
+  // 4) Fallbacks für image/animation_url
   if (meta && !meta.image && CFG.PNG_BASE_CID)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url && CFG.MP4_BASE_CID) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
-  if (!meta){
-    $("uriStatus").textContent="⚠️ Metadaten nicht gefunden";
-    media.textContent="—"; previewReady=false; applyMintButtonState(); return;
+  // 5) Nichts gefunden → Meldung
+  if (!meta) {
+    $("uriStatus").textContent = "⚠️ Metadaten nicht gefunden";
+    media.textContent = "—";
+    previewReady = false;
+    applyMintButtonState();
+    return;
   }
 
-  previewCache[id]=meta; renderPreview(id, meta);
-  previewReady=true; applyMintButtonState();
+  // 6) Rendern + Cache
+  previewCache[id] = meta;
+  renderPreview(id, meta);
+  previewReady = true;
+  applyMintButtonState();
 }
+
 function renderPreview(id, meta){
   $("uriStatus").textContent="✅ Metadaten geladen";
   const errs=[];
