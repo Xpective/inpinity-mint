@@ -958,7 +958,7 @@ async function onShowMyMints() {
 }
 
 /* ==================== NETWORK GUARD (Mainnet Badge) ==================== */
-const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 
 function upsertNetBadge(text, ok){
   let b=document.getElementById("netBadge");
