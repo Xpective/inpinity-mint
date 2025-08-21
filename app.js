@@ -68,64 +68,100 @@ import {
   AuthorityType,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA ==================== */
+/* ==================== METAPLEX TOKEN METADATA (ESM via esm.sh) ==================== */
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 async function loadTM() {
   const sources = [
-    "/vendor/mpl-token-metadata-umd.js",
-    "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js",
-    "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js"
+    // Primär 3.4.x
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020",
+    // Fallback 3.3.x
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0?bundle&target=es2020",
   ];
-
   let lastErr = null;
   for (const url of sources) {
     try {
-      // UMD Script laden
-      await new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = url;
-        script.onload = resolve;
-        script.onerror = reject;
-        document.head.appendChild(script);
+      const mod = await import(/* @vite-ignore */ url);
+      TM = mod;
+
+      // Kompatible Aliasse, egal ob unter "instructions" oder Top-Level exportiert
+      TM.createCreateMetadataAccountV2Instruction =
+        TM.createCreateMetadataAccountV2Instruction || TM.instructions?.createCreateMetadataAccountV2Instruction;
+      TM.createCreateMetadataAccountV3Instruction =
+        TM.createCreateMetadataAccountV3Instruction || TM.instructions?.createCreateMetadataAccountV3Instruction;
+      TM.createCreateMasterEditionV3Instruction =
+        TM.createCreateMasterEditionV3Instruction || TM.instructions?.createCreateMasterEditionV3Instruction;
+      TM.createUpdateMetadataAccountV2Instruction =
+        TM.createUpdateMetadataAccountV2Instruction || TM.instructions?.createUpdateMetadataAccountV2Instruction;
+      TM.createVerifyCollectionInstruction =
+        TM.createVerifyCollectionInstruction || TM.instructions?.createVerifyCollectionInstruction;
+      TM.createSetAndVerifyCollectionInstruction =
+        TM.createSetAndVerifyCollectionInstruction || TM.instructions?.createSetAndVerifyCollectionInstruction;
+
+      const pidStr =
+        (TM.PROGRAM_ID && (TM.PROGRAM_ID.toString?.() ?? String(TM.PROGRAM_ID))) || FALLBACK_TM_PID;
+      TOKEN_METADATA_PROGRAM_ID = new PublicKey(pidStr);
+
+      console.log("[vendor] mpl-token-metadata ready (ESM)", {
+        programId: TOKEN_METADATA_PROGRAM_ID.toString(),
+        src: url
       });
-
-      // Globale Variable prüfen
-      if (window.mpl && window.mpl.tokenMetadata) {
-        TM = window.mpl.tokenMetadata;
-        
-        // Kompatible Aliasse setzen
-        TM.createCreateMetadataAccountV2Instruction = 
-          TM.createCreateMetadataAccountV2Instruction || TM.instructions?.createCreateMetadataAccountV2Instruction;
-        TM.createCreateMetadataAccountV3Instruction = 
-          TM.createCreateMetadataAccountV3Instruction || TM.instructions?.createCreateMetadataAccountV3Instruction;
-        TM.createCreateMasterEditionV3Instruction = 
-          TM.createCreateMasterEditionV3Instruction || TM.instructions?.createCreateMasterEditionV3Instruction;
-        TM.createUpdateMetadataAccountV2Instruction = 
-          TM.createUpdateMetadataAccountV2Instruction || TM.instructions?.createUpdateMetadataAccountV2Instruction;
-        TM.createVerifyCollectionInstruction = 
-          TM.createVerifyCollectionInstruction || TM.instructions?.createVerifyCollectionInstruction;
-        TM.createSetAndVerifyCollectionInstruction = 
-          TM.createSetAndVerifyCollectionInstruction || TM.instructions?.createSetAndVerifyCollectionInstruction;
-
-        const pidStr = (TM.PROGRAM_ID && TM.PROGRAM_ID.toString()) || FALLBACK_TM_PID;
-        TOKEN_METADATA_PROGRAM_ID = new PublicKey(pidStr);
-
-        console.log("[vendor] mpl-token-metadata ready (UMD)", {
-          programId: TOKEN_METADATA_PROGRAM_ID.toString(),
-          src: url
-        });
-        window.__TM_OK__ = true;
-        return TM;
-      }
+      window.__TM_OK__ = true;
+      return TM;
     } catch (e) {
       lastErr = e;
-      console.warn("[vendor] UMD load failed:", url, String(e?.message || e));
+      console.warn("[vendor] ESM load failed:", url, String(e?.message || e));
     }
   }
-  throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden (UMD)");
+  throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden (ESM)");
+}
+async function ensureTM() {
+  if (!TM || !TOKEN_METADATA_PROGRAM_ID) await loadTM();
+  return TM;
+}
+function getTokenMetadataProgramId() {
+  if (!TOKEN_METADATA_PROGRAM_ID) {
+    throw new Error("Metaplex Program-ID noch nicht initialisiert – ensureTM() zuerst aufrufen");
+  }
+  return TOKEN_METADATA_PROGRAM_ID;
+}
+
+/* ========== Thin compatibility wrappers (v2/v3) ========== */
+function tmCreateMetadataInstr(accounts, dataV2Like) {
+  const fn =
+      TM.createCreateMetadataAccountV2Instruction
+   || TM.createCreateMetadataAccountV3Instruction;
+  if (!fn) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
+
+  const arg =
+    fn.name?.includes?.("V3")
+      ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
+      : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
+
+  return fn(accounts, arg);
+}
+function tmMasterEditionV3Instr(accounts, args) {
+  const fn = TM.createCreateMasterEditionV3Instruction;
+  if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
+  return fn(accounts, args);
+}
+function tmVerifyCollectionInstr(obj) {
+  const fn =
+      TM.createSetAndVerifyCollectionInstruction
+   || TM.createVerifyCollectionInstruction;
+  return fn ? fn(obj) : null;
+}
+function tmUpdateMetadataV2Instr(accounts, args) {
+  const fn = TM.createUpdateMetadataAccountV2Instruction;
+  if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
+  return fn(accounts, { updateMetadataAccountArgsV2: args });
+}
+function tmDeserializeMetadata(data) {
+  if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
+  if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
+  throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
 }
 
 async function ensureTM() {
