@@ -10,11 +10,6 @@ const CFG = {
   RPCS: [
     "https://api.inpinity.online/rpc",
     "https://inpinity-rpc-proxy.s-plat.workers.dev/rpc",
-    
-    // CDN-Fallbacks optional
-  "https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
-  "https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js",
-
   ],
   CLAIMS: [
     "https://api.inpinity.online/claims",
@@ -80,9 +75,7 @@ const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 async function loadTM() {
   const sources = [
-    // Primär 3.4.x
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020",
-    // Fallback 3.3.x
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0?bundle&target=es2020",
   ];
   let lastErr = null;
@@ -91,7 +84,7 @@ async function loadTM() {
       const mod = await import(/* @vite-ignore */ url);
       TM = mod;
 
-      // Kompatible Aliasse, egal ob unter "instructions" oder Top-Level exportiert
+      // Kompatible Aliasse
       TM.createCreateMetadataAccountV2Instruction =
         TM.createCreateMetadataAccountV2Instruction || TM.instructions?.createCreateMetadataAccountV2Instruction;
       TM.createCreateMetadataAccountV3Instruction =
@@ -142,53 +135,6 @@ function tmCreateMetadataInstr(accounts, dataV2Like) {
 
   const arg =
     fn.name?.includes?.("V3")
-      ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
-      : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
-
-  return fn(accounts, arg);
-}
-function tmMasterEditionV3Instr(accounts, args) {
-  const fn = TM.createCreateMasterEditionV3Instruction;
-  if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
-  return fn(accounts, args);
-}
-function tmVerifyCollectionInstr(obj) {
-  const fn =
-      TM.createSetAndVerifyCollectionInstruction
-   || TM.createVerifyCollectionInstruction;
-  return fn ? fn(obj) : null;
-}
-function tmUpdateMetadataV2Instr(accounts, args) {
-  const fn = TM.createUpdateMetadataAccountV2Instruction;
-  if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
-  return fn(accounts, { updateMetadataAccountArgsV2: args });
-}
-function tmDeserializeMetadata(data) {
-  if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
-  if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
-  throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
-}
-
-async function ensureTM() {
-  if (!TM || !TOKEN_METADATA_PROGRAM_ID) await loadTM();
-  return TM;
-}
-function getTokenMetadataProgramId() {
-  if (!TOKEN_METADATA_PROGRAM_ID) {
-    throw new Error("Metaplex Program-ID noch nicht initialisiert – ensureTM() zuerst aufrufen");
-  }
-  return TOKEN_METADATA_PROGRAM_ID;
-}
-
-/* ========== Thin compatibility wrappers (v2/v3) ========== */
-function tmCreateMetadataInstr(accounts, dataV2Like) {
-  const fn =
-      TM.createCreateMetadataAccountV2Instruction
-   || TM.createCreateMetadataAccountV3Instruction;
-  if (!fn) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
-
-  const arg =
-    fn.name.includes("V3")
       ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
       : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
 
@@ -295,9 +241,9 @@ async function recordMint(id, mint58, wallet58, signature) {
     mint: mint58,
     wallet: wallet58,
     sig: signature,
-    collection: CFG.COLLECTION_MINT,       // NEU
-    name: desiredName(id),                  // optional
-    uri: uriForId(id)                       // optional
+    collection: CFG.COLLECTION_MINT,
+    name: desiredName(id),
+    uri: uriForId(id)
   });
   const heads = { "content-type": "application/json" };
   for (const base of CFG.API_BASES) {
@@ -354,12 +300,17 @@ function updateEstimatedCost(){
 }
 
 /* ==================== WALLET (Phantom) ==================== */
+function getPhantom() {
+  // Bevorzugt window.phantom.solana, fallback window.solana
+  const w = (window.phantom && window.phantom.solana) ? window.phantom.solana : window.solana;
+  return (w && w.isPhantom) ? w : null;
+}
 async function connectPhantom(){
   try{
-    const w=window.solana;
-    if (!w?.isPhantom) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
-    const resp=await w.connect(); // Popup
-    phantom=w;
+    const w = getPhantom();
+    if (!w) throw new Error("Phantom nicht gefunden. Bitte Phantom installieren.");
+    const resp = await w.connect({ onlyIfTrusted: false }); // Popup
+    phantom = w;
 
     await ensureConnection();
 
@@ -372,7 +323,7 @@ async function connectPhantom(){
 
     await updateBalance();
 
-    phantom.on("disconnect", ()=>{
+    phantom.on?.("disconnect", ()=>{
       $("walletLabel").textContent="nicht verbunden";
       $("connectBtn").textContent="Mit Phantom verbinden";
       $("mintBtn").disabled=true;
@@ -834,7 +785,7 @@ async function doMint(){
     );
     setTimeout(()=>{ const c=document.getElementById("copyTx"); if (c) c.onclick=()=>navigator.clipboard.writeText(signature); },0);
 
-    // Registry
+    // Registry (KV Logging im Worker)
     try { await recordMint(id, mint.toBase58(), payer.toBase58(), signature); } catch {}
 
     await markClaimed(id); claimedSet.add(id); recomputeAvailable();
@@ -903,25 +854,25 @@ function wireUI(){
   $("tokenId")?.addEventListener("input", updatePreview);
   $("myMintsBtn")?.addEventListener("click", onShowMyMints);
 
-// Donation-Pills
-const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
-const customContainer = $("customDonationContainer");
-const customInput = $("customDonationInput");
-const applyDonationSelection = () => {
-  pills.forEach(pill => pill.classList.remove("active")); // <— p -> pill
-  const checked = document.querySelector('#donationOptions input[name="donation"]:checked');
-  if (!checked) return;
-  const pill = checked.closest(".pill"); if (pill) pill.classList.add("active");
-  if (customContainer) customContainer.style.display = (checked.value === "custom") ? "inline-flex" : "none";
-  updateEstimatedCost();
-};
-pills.forEach(pill => {
-  pill.addEventListener("click", () => {
-    const radio = pill.querySelector('input[name="donation"]'); if (!radio) return;
-    radio.checked = true;
-    applyDonationSelection();
+  // Donation-Pills
+  const pills = Array.from(document.querySelectorAll('#donationOptions .pill'));
+  const customContainer = $("customDonationContainer");
+  const customInput = $("customDonationInput");
+  const applyDonationSelection = () => {
+    pills.forEach(pill => pill.classList.remove("active"));
+    const checked = document.querySelector('#donationOptions input[name="donation"]:checked');
+    if (!checked) return;
+    const pill = checked.closest(".pill"); if (pill) pill.classList.add("active");
+    if (customContainer) customContainer.style.display = (checked.value === "custom") ? "inline-flex" : "none";
+    updateEstimatedCost();
+  };
+  pills.forEach(pill => {
+    pill.addEventListener("click", () => {
+      const radio = pill.querySelector('input[name="donation"]'); if (!radio) return;
+      radio.checked = true;
+      applyDonationSelection();
+    });
   });
-});
   document.querySelectorAll('#donationOptions input[name="donation"]').forEach(radio=>{
     radio.addEventListener("change", applyDonationSelection);
   });
