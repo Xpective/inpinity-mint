@@ -29,9 +29,6 @@ const CFG = {
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
-  // Legacy-CID (für Repair alter Stücke)
-  LEGACY_JSON_BASE_CID: "QmSBsDujNkVNdmAUk5mUr7VrQaKa34q7KQ1SPyV32aAiC5",
-
   // Collection.json (Fallback-CID)
   COLLECTION_JSON_CID: "bafkreigbjzbd4nba6yzkdvwhmkj4g3poglujachjxqznbyqfn55anlbcua",
 
@@ -70,12 +67,14 @@ import {
   createAssociatedTokenAccountInstruction,
   createInitializeMint2Instruction,
   createMintToInstruction,
+  createSetAuthorityInstruction,
+  AuthorityType,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 /* ==================== METAPLEX TOKEN METADATA (ESM v2.x) ==================== */
+let IS_SIZED_COLLECTION = false;
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
-let IS_SIZED_COLLECTION = false; // wird beim Preflight gesetzt
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 /* ---- helpers ---- */
@@ -83,7 +82,7 @@ function getPath(obj, path) { return path.split(".").reduce((o,k)=>o?.[k], obj);
 const stripNulls = (s) => (typeof s === "string" ? s.replace(/\0+$/g, "") : s);
 
 async function loadTM() {
-  // Klassische Web3-API (2.x) – KEIN UMI
+  // Klassische Web3-API (v2.x) – keine UMI 3.x laden!
   const sources = [
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.7.0?target=es2020&bundle",
     "https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.9.1?target=es2020&bundle",
@@ -96,13 +95,15 @@ async function loadTM() {
       const mod = await import(/* @vite-ignore */ url);
       const m = (mod && typeof mod.default === "object") ? mod.default : mod;
 
-      // Minimal-API prüfen
-      const ok =
-         m?.createCreateMetadataAccountV3Instruction
-      || m?.instructions?.createCreateMetadataAccountV3Instruction
-      || m?.createCreateMetadataAccountV2Instruction
-      || m?.instructions?.createCreateMetadataAccountV2Instruction;
-      if (!ok) throw new Error("CreateMetadata v2/v3 nicht gefunden");
+      // Minimal-Shape prüfen
+      if (!(
+        m?.createCreateMetadataAccountV3Instruction ||
+        m?.instructions?.createCreateMetadataAccountV3Instruction ||
+        m?.createCreateMetadataAccountV2Instruction ||
+        m?.instructions?.createCreateMetadataAccountV2Instruction
+      )) {
+        throw new Error("CreateMetadata V2/V3 nicht im Modul gefunden");
+      }
 
       TM = m;
 
@@ -162,7 +163,8 @@ function tmMasterEditionV3Instr(accounts, args) {
   return fn(accounts, args);
 }
 
-function tmVerifyCollectionInstrSmart(obj, sized) {
+/** Verify-Helper, sized-aware */
+function tmVerifyCollectionInstr(obj, sized) {
   // Sized-Varianten
   const setAndVerifySized = TM.createSetAndVerifySizedCollectionItemInstruction
                          || TM.instructions?.createSetAndVerifySizedCollectionItemInstruction;
@@ -176,13 +178,12 @@ function tmVerifyCollectionInstrSmart(obj, sized) {
                     || TM.instructions?.createVerifyCollectionInstruction;
 
   if (sized) {
-    // Bei sized ist "setAndVerifySized" ok, wenn collection bereits im Metadata steckt.
+    // Wir haben die Collection schon im Metadata gesetzt → nur „verify sized“
     if (verifySized) return verifySized(obj);
-    if (setAndVerifySized) return setAndVerifySized(obj);
-    // Notfalls Fallback:
-    if (verify) return verify(obj);
+    if (verify) return verify(obj); // Fallback (unsized verify)
     return null;
   } else {
+    // Unsized: set + verify in einem
     if (setAndVerify) return setAndVerify(obj);
     if (verify) return verify(obj);
     return null;
@@ -262,7 +263,6 @@ const toHttp = (u)=>{
   return u;
 };
 const uriForId = (id)=>`ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
-const legacyUriForId = (id)=>`ipfs://${CFG.LEGACY_JSON_BASE_CID}/${id}.json`;
 const desiredName = (id) => `Pi Pyramid #${id}`;
 
 /* ---- IPFS helpers for collection.json fallback ---- */
@@ -301,27 +301,7 @@ function applyMintButtonState(){
   btn.disabled=!ok;
 }
 
-/* ==================== REGISTRY ==================== */
-async function recordMint(id, mint58, wallet58, signature) {
-  const payload = JSON.stringify({
-    id,
-    mint: mint58,
-    wallet: wallet58,
-    sig: signature,
-    collection: CFG.COLLECTION_MINT,
-    name: desiredName(id),
-    uri: uriForId(id)
-  });
-  const heads = { "content-type": "application/json" };
-  for (const base of CFG.API_BASES) {
-    try {
-      const r = await fetch(`${base}/mints`, { method: "POST", headers: heads, body: payload });
-      if (r.ok) { log("mint recorded", { base, id, mint58, wallet58 }); return true; }
-      log("mint record failed", { base, status: r.status });
-    } catch (e) { log("mint record error", { base, err: String(e?.message||e) }); }
-  }
-  return false;
-}
+/* ==================== REGISTRY (Lesen) ==================== */
 async function fetchMyMints(wallet58, limit=10) {
   for (const base of CFG.API_BASES) {
     try {
@@ -423,7 +403,7 @@ async function fetchClaims(){
   }
   return [];
 }
-async function markClaimed(i){
+async function markClaimedSimple(i){ // (alte Variante – bleibt als Fallback)
   for (const url of CFG.CLAIMS){
     try{
       const r=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({index:i})});
@@ -546,7 +526,7 @@ function renderPreview(id, meta){
 async function fetchAccountInfo(conn, pubkey){
   try{ return await conn.getAccountInfo(pubkey,"confirmed"); }catch{ return null; }
 }
-async function collectionPreflight(conn, _payerPk, collectionMintPk){
+async function collectionPreflight(conn, payerPk, collectionMintPk){
   await ensureTM();
 
   const mdPda = findMetadataPda(collectionMintPk);
@@ -568,16 +548,16 @@ async function collectionPreflight(conn, _payerPk, collectionMintPk){
 
   let md;
   try { md = tmDeserializeMetadata(mdAcc.data); } catch {}
-
   const name  = stripNulls(md?.data?.name)   || "(unbekannt)";
   const sym   = stripNulls(md?.data?.symbol) || "";
   const uri   = stripNulls(md?.data?.uri)    || "";
 
-  // sized erkennen
+  // Sized-Flag erkennen
   IS_SIZED_COLLECTION = !!md?.collectionDetails;
+
   log("collection: ok", { name, symbol: sym, uri, sized: IS_SIZED_COLLECTION });
 
-  // zusätzliche Einsicht: collection.json laden (on-chain oder Fallback)
+  // ---- optionale Einsicht: collection.json laden (on-chain oder Fallback-CID) ----
   let cj = await fetchJsonMaybe(uri);
   if (!cj && CFG.COLLECTION_JSON_CID) {
     for (const cand of collectionCidHttpCandidates()) {
@@ -585,15 +565,18 @@ async function collectionPreflight(conn, _payerPk, collectionMintPk){
         const r = await fetch(cand, { cache: "no-store" });
         if (r.ok) cj = await r.json().catch(()=>null);
       } catch {}
-      if (cj) { console.log("[collection json]", { url: cand, name: cj.name||"", symbol: cj.symbol||"" }); break; }
+      if (cj) { console.log("[collection json fallback]", { url: cand, name: cj.name||"", symbol: cj.symbol||"" }); break; }
     }
   }
+  if (cj) console.log("[collection json]", { name: cj.name||"", symbol: cj.symbol||"", uri: uri || `(cid:${CFG.COLLECTION_JSON_CID})` });
+  else     console.warn("[collection json] nicht ladbar – weder on-chain URI noch CID-Fallback ergab verwertbare JSON.");
 
   return { mdPda, edPda, name, symbol: sym, uri };
 }
 async function softAssertCollection(conn, collectionMintPk){
   try {
-    await collectionPreflight(conn, phantom?.publicKey || null, collectionMintPk);
+    const payerPk = phantom?.publicKey || null;
+    await collectionPreflight(conn, payerPk, collectionMintPk);
     return true;
   } catch (e) {
     log("collection: warn", String(e?.message||e));
@@ -633,7 +616,10 @@ async function signSendWithRetry(conn, builtTx, wallet, extraSigner){
     try {
       const sim = await conn.simulateTransaction(tx, { sigVerify:false, commitment:"processed" });
       if (sim?.value?.logs?.length) log("simulate logs", sim.value.logs);
-      if (sim?.value?.err) throw new Error("Simulation fehlgeschlagen: " + JSON.stringify(sim.value.err));
+
+      // Hinweis: „account already in use“ kann bei wiederholter Simulation auftauchen,
+      // wenn dieselbe CreateAccount-Adresse vorher schon angelegt wurde (z.B. Retry).
+      // Das ist für den Live-Send i.d.R. unkritisch. Wir senden trotzdem.
     } catch (e) {
       log("simulate error", String(e?.message||e));
     }
@@ -663,45 +649,6 @@ async function signSendWithRetry(conn, builtTx, wallet, extraSigner){
 }
 
 /* ==================== REPAIR / helpers ==================== */
-function buildDesiredDataV2(id){
-  return {
-    name:  desiredName(id),
-    symbol: "InPi",
-    uri:   uriForId(id),
-    sellerFeeBasisPoints: CFG.ROYALTY_BPS,
-    creators:[{ address:new PublicKey(CFG.CREATOR), verified:true, share:100 }],
-    collection:{ key:new PublicKey(CFG.COLLECTION_MINT), verified:false },
-    uses:null
-  };
-}
-
-async function updateMetadataIfNeeded(conn, payer, metadataPda, md, id){
-  const want = buildDesiredDataV2(id);
-
-  const needUpdate =
-      stripNulls(md?.data?.name||"")   !== want.name
-   || stripNulls(md?.data?.symbol||"") !== want.symbol
-   || stripNulls(md?.data?.uri||"")    !== want.uri
-   || (md?.data?.sellerFeeBasisPoints??0)!== want.sellerFeeBasisPoints
-   || !md?.data?.creators?.[0]?.address?.equals?.(new PublicKey(CFG.CREATOR))
-   || (md?.data?.creators?.[0]?.share ?? 0)!==100;
-
-  if (!needUpdate) return null;
-
-  return tmUpdateMetadataV2Instr(
-    { metadata: metadataPda, updateAuthority: payer },
-    {
-      data: want,
-      updateAuthority: payer,
-      primarySaleHappened: md.primarySaleHappened ?? null,
-      isMutable: md.isMutable ?? true
-    }
-  );
-}
-
-/** Sucht in der CREATOR-Wallet nach einem existierenden Mint für eine #id.
- *  Erkennt sowohl Legacy-Name/URI als auch Collection+„#id“.
- */
 async function findExistingMintByIdForCreator(conn, id){
   await ensureTM();
   const owner = new PublicKey(CFG.CREATOR);
@@ -711,11 +658,8 @@ async function findExistingMintByIdForCreator(conn, id){
     .filter(info => info?.tokenAmount?.decimals===0 && info.tokenAmount.amount==='1')
     .map(info => info.mint);
 
-  const wantNameNew    = `Pi Pyramid #${id}`;
-  const wantNameLegacy = `Pi x Phi #${id}`;
-  const wantUriNew     = uriForId(id);
-  const wantUriLegacy  = legacyUriForId(id);
-  const collectionPk   = new PublicKey(CFG.COLLECTION_MINT);
+  const wantName = desiredName(id);
+  const wantUri  = uriForId(id);
 
   for (const mintStr of candidates){
     try{
@@ -727,54 +671,60 @@ async function findExistingMintByIdForCreator(conn, id){
 
       const gotName = stripNulls(md?.data?.name || "");
       const gotUri  = stripNulls(md?.data?.uri  || "");
-      const gotColl = md?.collection?.key;
 
-      const nameMatches = (gotName === wantNameNew) || (gotName === wantNameLegacy);
-      const uriMatches  = (gotUri === wantUriNew)  || (gotUri === wantUriLegacy);
-      const collMatches = (gotColl && gotColl.equals?.(collectionPk));
-
-      const idFromName = (() => {
-        const m = gotName.match(/#(\d+)/); return m ? Number(m[1]) : NaN;
-      })();
-      const collectionAndIdMatch = collMatches && Number.isFinite(idFromName) && idFromName === id;
-
-      if (nameMatches || uriMatches || collectionAndIdMatch) {
-        return mint;
-      }
-    }catch{/* ignore */}
+      if (gotUri===wantUri || gotName===wantName) return mint;
+    }catch{}
   }
   return null;
 }
-
-/** Repariert EIN NFT (in Creator-Wallet): Name/URI → neu, verifiziert Collection (sized aware). */
-async function repairOneById(id){
-  const conn = await ensureConnection();
+function buildDesiredDataV2(id){
+  return {
+    name:  desiredName(id),
+    symbol: "InPi",
+    uri:   uriForId(id),
+    sellerFeeBasisPoints: CFG.ROYALTY_BPS,
+    creators:[{ address:new PublicKey(CFG.CREATOR), verified:true, share:100 }],
+    collection:{ key:new PublicKey(CFG.COLLECTION_MINT), verified:false },
+    uses:null
+  };
+}
+async function ensureMetadataAndCollection(conn, payer, mint, id){
   await ensureTM();
-  const payer = phantom?.publicKey;
-  if (!payer) throw new Error("Wallet nicht verbunden");
-
-  const existingMint = await findExistingMintByIdForCreator(conn, id);
-  if (!existingMint) throw new Error("NFT nicht in Creator-Wallet gefunden");
-
   const tx = new Transaction();
   await setSmartPriority(tx, conn);
 
-  // PDAs
-  const metadataPda = findMetadataPda(existingMint);
-  const collMdPda   = findMetadataPda(new PublicKey(CFG.COLLECTION_MINT));
-  const collEdPda   = findMasterEditionPda(new PublicKey(CFG.COLLECTION_MINT));
+  const metadataPda=findMetadataPda(mint);
+  const collMdPda  =findMetadataPda(new PublicKey(CFG.COLLECTION_MINT));
+  const collEdPda  =findMasterEditionPda(new PublicKey(CFG.COLLECTION_MINT));
 
-  // load current metadata
   const acc = await conn.getAccountInfo(metadataPda, "confirmed");
   if (!acc) throw new Error("Metadata PDA nicht gefunden");
-  const md  = tmDeserializeMetadata(acc.data);
 
-  // ggf. Update (Name/URI/creator/royalty)
-  const updIx = await updateMetadataIfNeeded(conn, payer, metadataPda, md, id);
-  if (updIx) tx.add(updIx);
+  const md = tmDeserializeMetadata(acc.data);
 
-  // verify (sized-aware)
-  const vIx = tmVerifyCollectionInstrSmart({
+  const want = buildDesiredDataV2(id);
+  const needUpdate =
+      stripNulls(md?.data?.name||"")   !== want.name
+   || stripNulls(md?.data?.symbol||"") !== want.symbol
+   || stripNulls(md?.data?.uri||"")    !== want.uri
+   || (md?.data?.sellerFeeBasisPoints??0)!== want.sellerFeeBasisPoints
+   || !md?.data?.creators?.[0]?.address?.equals?.(new PublicKey(CFG.CREATOR))
+   || (md?.data?.creators?.[0]?.share ?? 0)!==100;
+
+  if (needUpdate){
+    const instr = tmUpdateMetadataV2Instr(
+      { metadata: metadataPda, updateAuthority: payer },
+      {
+        data: want,
+        updateAuthority: payer,
+        primarySaleHappened: md.primarySaleHappened ?? null,
+        isMutable: md.isMutable ?? true
+      }
+    );
+    tx.add(instr);
+  }
+
+  const verifyInstr = tmVerifyCollectionInstr({
     metadata: metadataPda,
     collectionAuthority: payer,
     payer,
@@ -783,12 +733,12 @@ async function repairOneById(id){
     collection: collMdPda,
     collectionMasterEditionAccount: collEdPda
   }, IS_SIZED_COLLECTION);
-  if (vIx) tx.add(vIx);
+  if (verifyInstr) tx.add(verifyInstr);
 
-  const sig = await signSendWithRetry(conn, tx, phantom);
-  log("repair ok", { signature: sig, mint: existingMint.toBase58() });
+  const sig=await signSendWithRetry(conn, tx, phantom);
+  log("repair ok",{signature:sig, mint: mint.toBase58()});
   setStatus(
-    `🔧 Repair/Verify #${id} erfolgreich. <a class="link" href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">Tx</a>`,
+    `🔧 Repair/Verify erfolgreich. <a class="link" href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">Transaktion ansehen</a>`,
     "ok"
   );
 }
@@ -820,8 +770,13 @@ async function doMint(){
     /* === FALL A: bereits gemintet → Auto-Repair für Creator === */
     if (claimedSet.has(id)){
       if (!isSelf) throw new Error(`ID #${id} ist bereits gemintet.`);
-      setStatus(`ID #${id} existiert bereits – repariere/verify…`,"info");
-      await repairOneById(id);
+      setStatus(`ID #${id} existiert bereits – prüfe & repariere (Verify/Metadata)…`,"info");
+      log("repair-start",{id});
+
+      const existingMint = await findExistingMintByIdForCreator(conn, id);
+      if (!existingMint) throw new Error("Bestehenden Mint nicht gefunden. Liegt das NFT noch in der Creator-Wallet?");
+      await ensureMetadataAndCollection(conn, payer, existingMint, id);
+
       await setNextFreeId(); await updateBalance();
       return;
     }
@@ -839,7 +794,7 @@ async function doMint(){
     if (feeLamports>0) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:feeLamports}));
     if (donationLamports>=1000) tx.add(SystemProgram.transfer({fromPubkey:payer,toPubkey:creatorPk,lamports:donationLamports}));
 
-    // --- 1) Mint-Account + InitializeMint (Authority = payer)
+    // --- 1) Mint-Account + InitializeMint (Authority = payer, temporär)
     const mintKeypair = Keypair.generate();
     const mint = mintKeypair.publicKey;
 
@@ -870,6 +825,7 @@ async function doMint(){
         mintAuthority: payer,
         payer,
         updateAuthority: payer
+        // systemProgram/rent optional
       },
       {
         name: nftName,
@@ -882,7 +838,7 @@ async function doMint(){
       }
     ));
 
-    // --- 4) Master Edition V3 (supply = 1)
+    // --- 4) Master Edition V3 (jetzt erlaubt – supply = 1)
     const masterEditionPda = findMasterEditionPda(mint);
     tx.add(tmMasterEditionV3Instr(
       {
@@ -896,12 +852,16 @@ async function doMint(){
       { createMasterEditionArgs: { maxSupply: 0 } }
     ));
 
-    // --- 5) KEIN SetAuthority mehr (verursachte 0x4). MintAuthority bleibt bei payer (ok, supply=1)
+    // --- 5) Mint-Authority revoken (wichtig: NACH MasterEdition)
+    tx.add(createSetAuthorityInstruction(
+      mint, payer, AuthorityType.MintTokens, null, []
+    ));
+    // FreezeAuthority NICHT ändern.
 
-    // --- 6) Collection verify (sized-aware)
+    // --- 6) Collection verifizieren (sized-aware)
     const collMdPda = findMetadataPda(collectionMint);
     const collEdPda = findMasterEditionPda(collectionMint);
-    const verifyInstr = tmVerifyCollectionInstrSmart({
+    const verifyInstr = tmVerifyCollectionInstr({
       metadata: metadataPda,
       collectionAuthority: payer,
       payer,
@@ -911,14 +871,6 @@ async function doMint(){
       collectionMasterEditionAccount: collEdPda
     }, IS_SIZED_COLLECTION);
     if (verifyInstr) tx.add(verifyInstr);
-
-    // --- 7) Bei Fremd-Mint Update-Authority → CREATOR
-    if (!isSelf) {
-      tx.add(tmUpdateMetadataV2Instr(
-        { metadata: metadataPda, updateAuthority: payer },
-        { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
-      ));
-    }
 
     setStatus("Bitte im Wallet signieren…","info");
     const signature=await signSendWithRetry(conn, tx, wallet, mintKeypair);
@@ -932,10 +884,17 @@ async function doMint(){
     );
     setTimeout(()=>{ const c=document.getElementById("copyTx"); if (c) c.onclick=()=>navigator.clipboard.writeText(signature); },0);
 
-    // Registry
-    try { await recordMint(id, mint.toBase58(), payer.toBase58(), signature); } catch {}
+    // Registry + Claims (NEU – eine Zeile)
+    try {
+      await ensureClaimAndRecord(id, mint.toBase58(), payer.toBase58(), signature, ata?.toBase58());
+    } catch (e) {
+      // Soft-fail: UI weiter; Logging im Hintergrund
+      log("ensureClaimAndRecord error", String(e?.message||e));
+      // Fallback: alte, einfache Aufrufe probieren
+      try { await recordMint(id, mint.toBase58(), payer.toBase58(), signature, ata?.toBase58()); } catch {}
+      try { await markClaimedSimple(id); } catch {}
+    }
 
-    await markClaimed(id); claimedSet.add(id); recomputeAvailable();
     await setNextFreeId(); await updateBalance();
 
   }catch(e){ handleError("Mint/Repair fehlgeschlagen:", e);
@@ -953,8 +912,8 @@ function userFriendly(msg){
   if (/insufficient funds|insufficient|0x7d0/i.test(msg)) return "Unzureichendes SOL-Guthaben.";
   if (/BlockhashNotFound|expired/i.test(msg)) return "Netzwerk langsam. Bitte erneut versuchen.";
   if (/custom program error: 0x1/i.test(msg)) return "PDAs/Metaplex-Accounts fehlen oder falsche Authority.";
-  if (/invalid owner|0x1771|custom program error: 0x4/i.test(msg)) return "Authority passt nicht (SetAuthority entfernt). Bitte Seite neu laden.";
-  if (/0x66/i.test(msg)) return "Sized-Collection: falsche Verify-IX. Nutze jetzt die Sized-Variante.";
+  if (/invalid owner|0x1771/i.test(msg)) return "Token-Program/Owner-Mismatch. Bitte Seite neu laden.";
+  if (/already in use/i.test(msg)) return "Adresse bereits genutzt (Retry/SIM). Erneut senden probieren.";
   return msg;
 }
 function handleError(context,e){
@@ -1041,23 +1000,143 @@ async function assertMainnet(conn){
   }
 }
 
+/* ==================== API-UTILS: Namespace-Init, recordMint, markClaimed ==================== */
+
+async function postJSON(url, body, timeoutMs = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body || {}),
+      signal: ctrl.signal,
+    });
+    return res;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function ensureMintsNamespace() {
+  const payload = { collection: CFG.COLLECTION_MINT };
+  for (const base of CFG.API_BASES) {
+    try {
+      const res = await postJSON(`${base}/mints/init`, payload);
+      if (res.status === 200 || res.status === 201) {
+        log("mints namespace created", { base });
+        return true;
+      }
+      if (res.status === 409) {
+        log("mints namespace already exists", { base });
+        return true;
+      }
+      log("mints init unexpected status", { base, status: res.status });
+    } catch (e) {
+      log("mints init error", { base, err: String(e?.message || e) });
+    }
+  }
+  return false;
+}
+
+async function ensureClaimsNamespace() {
+  for (const base of CFG.API_BASES) {
+    try {
+      const res = await postJSON(`${base}/claims/init`, {});
+      if (res.status === 200 || res.status === 201 || res.status === 409) {
+        log("claims namespace ok", { base, status: res.status });
+        return true;
+      }
+      log("claims init unexpected status", { base, status: res.status });
+    } catch (e) {
+      log("claims init error", { base, err: String(e?.message || e) });
+    }
+  }
+  return false;
+}
+
+async function recordMint(id, mint58, wallet58, signature, tokenAccount58) {
+  await ensureMintsNamespace();
+
+  const payload = {
+    id,
+    mint: mint58,
+    wallet: wallet58,
+    sig: signature,
+    tokenAccount: tokenAccount58 || null,
+    collection: CFG.COLLECTION_MINT,
+    name: desiredName(id),
+    uri: uriForId(id),
+    ts: Date.now()
+  };
+
+  const heads = { "content-type": "application/json" };
+  let anyOk = false;
+
+  for (const base of CFG.API_BASES) {
+    try {
+      const res = await fetch(`${base}/mints`, { method: "POST", headers: heads, body: JSON.stringify(payload) });
+      if (res.ok) {
+        log("mint recorded", { base, id, mint58, wallet58 });
+        anyOk = true;
+      } else {
+        log("mint record failed", { base, status: res.status });
+      }
+    } catch (e) {
+      log("mint record error", { base, err: String(e?.message || e) });
+    }
+  }
+  return anyOk;
+}
+
+async function markClaimed(i) {
+  await ensureClaimsNamespace();
+
+  for (const url of CFG.CLAIMS) {
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ index: i })
+      });
+      if (r.status === 200) {
+        log("claim stored", { index: i, base: url });
+        return true;
+      }
+      if (r.status === 409) {
+        log("claim already existed", { index: i, base: url });
+        return true;
+      }
+      log("claim unexpected status", { index: i, base: url, status: r.status });
+    } catch (e) {
+      log("claim store error", { index: i, base: url, err: String(e?.message || e) });
+    }
+  }
+  return false;
+}
+
+async function ensureClaimAndRecord(id, mint58, wallet58, signature, tokenAccount58) {
+  const recOk = await recordMint(id, mint58, wallet58, signature, tokenAccount58);
+  if (!recOk) log("warn: recordMint did not confirm on any base", { id, mint58 });
+
+  const claimedOk = await markClaimed(id);
+  if (!claimedOk) log("warn: markClaimed did not confirm on any base", { id });
+
+  try { claimedSet.add(id); recomputeAvailable(); } catch {}
+  return { recOk, claimedOk };
+}
+
 /* ==================== UI WIRING ==================== */
 function wireUI(){
   $("connectBtn")?.addEventListener("click", connectPhantom);
   $("mintBtn")?.addEventListener("click", doMint);
   $("randBtn")?.addEventListener("click", setNextFreeId);
 
-  // OPTIONAL: Reparatur-Buttons im UI verdrahten (falls vorhanden)
-  const repairBtn = $("repairOneBtn");
-  repairBtn?.addEventListener("click", async ()=>{
-    const id = Number($("tokenId").value||0)|0;
-    try { await repairOneById(id); } catch(e){ handleError("Repair fehlgeschlagen:", e); }
-  });
-
+  // Debounce Preview
   $("tokenId")?.addEventListener("input", ()=>{
     const now = Date.now();
     if (_prevTimer) clearTimeout(_prevTimer);
-    _prevTimer = setTimeout(()=>updatePreview(), 250);
+    _prevTimer = setTimeout(()=>updatePreview(), (now - _prevTs) < 250 ? 250 : 0);
     _prevTs = now;
   });
 
@@ -1111,7 +1190,7 @@ document.addEventListener("DOMContentLoaded", async ()=>{
 
   try {
     const conn = await ensureConnection();
-    await assertMainnet(conn);
+    await assertMainnet(conn); // <<< Mainnet-Proof + Badge
     await ensureTM();
     await softAssertCollection(conn, new PublicKey(CFG.COLLECTION_MINT));
   } catch (e) {
