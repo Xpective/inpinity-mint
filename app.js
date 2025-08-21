@@ -68,38 +68,25 @@ import {
   AuthorityType,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA (UMD via Worker) ==================== */
+/* ==================== METAPLEX TOKEN METADATA (ESM via esm.sh) ==================== */
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 async function loadTM() {
-  const candidates = [
-    "https://api.inpinity.online/vendor/mpl-token-metadata-umd.js",
-    "https://inpi-proxy-nft.s-plat.workers.dev/vendor/mpl-token-metadata-umd.js",
+  const sources = [
+    // Primär 3.4.x
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.4.0?bundle&target=es2020",
+    // Fallback 3.3.x
+    "https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.3.0?bundle&target=es2020",
   ];
-
   let lastErr = null;
-  for (const url of candidates) {
+  for (const url of sources) {
     try {
-      await new Promise((resolve, reject) => {
-        const s = document.createElement("script");
-        s.src = url;
-        s.async = true;
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error("script load failed: " + url));
-        document.head.appendChild(s);
-      });
+      const mod = await import(/* @vite-ignore */ url);
+      TM = mod;
 
-      TM =
-        window.mpl_token_metadata ||
-        window.mplTokenMetadata ||
-        (window.metaplex && window.metaplex.mplTokenMetadata) ||
-        null;
-
-      if (!TM) throw new Error("UMD global not found");
-
-      // Builder ggf. aus TM.instructions aliasen
+      // Kompatible Aliasse, egal ob unter "instructions" oder Top-Level exportiert
       TM.createCreateMetadataAccountV2Instruction =
         TM.createCreateMetadataAccountV2Instruction || TM.instructions?.createCreateMetadataAccountV2Instruction;
       TM.createCreateMetadataAccountV3Instruction =
@@ -114,23 +101,69 @@ async function loadTM() {
         TM.createSetAndVerifyCollectionInstruction || TM.instructions?.createSetAndVerifyCollectionInstruction;
 
       const pidStr =
-        (TM.PROGRAM_ID && (TM.PROGRAM_ID.toString?.() ?? String(TM.PROGRAM_ID))) ||
-        FALLBACK_TM_PID;
-
+        (TM.PROGRAM_ID && (TM.PROGRAM_ID.toString?.() ?? String(TM.PROGRAM_ID))) || FALLBACK_TM_PID;
       TOKEN_METADATA_PROGRAM_ID = new PublicKey(pidStr);
-      console.log("[vendor] mpl-token-metadata ready (UMD)", {
-        programId: TOKEN_METADATA_PROGRAM_ID.toString()
-      });
 
+      console.log("[vendor] mpl-token-metadata ready (ESM)", {
+        programId: TOKEN_METADATA_PROGRAM_ID.toString(),
+        src: url
+      });
       window.__TM_OK__ = true;
       return TM;
     } catch (e) {
       lastErr = e;
-      console.warn("[vendor] KV UMD failed:", String(e?.message || e));
+      console.warn("[vendor] ESM load failed:", url, String(e?.message || e));
     }
   }
-  throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden");
+  throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden (ESM)");
 }
+async function ensureTM() {
+  if (!TM || !TOKEN_METADATA_PROGRAM_ID) await loadTM();
+  return TM;
+}
+function getTokenMetadataProgramId() {
+  if (!TOKEN_METADATA_PROGRAM_ID) {
+    throw new Error("Metaplex Program-ID noch nicht initialisiert – ensureTM() zuerst aufrufen");
+  }
+  return TOKEN_METADATA_PROGRAM_ID;
+}
+
+/* ========== Thin compatibility wrappers (v2/v3) ========== */
+function tmCreateMetadataInstr(accounts, dataV2Like) {
+  const fn =
+      TM.createCreateMetadataAccountV2Instruction
+   || TM.createCreateMetadataAccountV3Instruction;
+  if (!fn) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
+
+  const arg =
+    fn.name?.includes?.("V3")
+      ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
+      : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
+
+  return fn(accounts, arg);
+}
+function tmMasterEditionV3Instr(accounts, args) {
+  const fn = TM.createCreateMasterEditionV3Instruction;
+  if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
+  return fn(accounts, args);
+}
+function tmVerifyCollectionInstr(obj) {
+  const fn =
+      TM.createSetAndVerifyCollectionInstruction
+   || TM.createVerifyCollectionInstruction;
+  return fn ? fn(obj) : null;
+}
+function tmUpdateMetadataV2Instr(accounts, args) {
+  const fn = TM.createUpdateMetadataAccountV2Instruction;
+  if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
+  return fn(accounts, { updateMetadataAccountArgsV2: args });
+}
+function tmDeserializeMetadata(data) {
+  if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
+  if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
+  throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
+}
+
 async function ensureTM() {
   if (!TM || !TOKEN_METADATA_PROGRAM_ID) await loadTM();
   return TM;
@@ -433,58 +466,40 @@ async function fetchFirst(metaUrls) {
 /* ==================== PREVIEW ==================== */
 const previewCache = {};
 async function updatePreview() {
-  // 1) ID clampen + UI vorbereiten
   const clampId = (v) => { v = Number(v) || 0; return Math.max(0, Math.min(CFG.MAX_INDEX, v)); };
   const id = clampId($("tokenId").value || 0);
   $("tokenId").value = String(id);
 
   $("previewUri").textContent = uriForId(id);
   $("uriStatus").textContent = "prüfe URI …";
-  previewReady = false;
-  applyMintButtonState();
+  previewReady = false; applyMintButtonState();
 
-  const media = $("mediaBox");
-  const metaBox = $("metaBox");
-  media.innerHTML = '<span class="muted">Lade Vorschau…</span>';
-  metaBox.innerHTML = "";
+  const media = $("mediaBox"); const metaBox = $("metaBox");
+  media.innerHTML = '<span class="muted">Lade Vorschau…</span>'; metaBox.innerHTML = "";
 
-  // 2) Cache-Hit?
   if (previewCache[id]) {
     renderPreview(id, previewCache[id]);
-    previewReady = true;
-    applyMintButtonState();
+    previewReady = true; applyMintButtonState();
     return;
   }
 
-  // 3) Von IPFS holen (mit Debug-Logs)
   const urls = CFG.GATEWAYS.map(g => `${g}/${CFG.JSON_BASE_CID}/${id}.json`);
   log("meta try", { urls });
 
   let meta = null;
-  try {
-    meta = await fetchFirst(urls);
-  } catch (e) {
-    log("meta all failed", String(e?.message || e));
-  }
+  try { meta = await fetchFirst(urls); } catch {}
 
-  // 4) Fallbacks für image/animation_url
   if (meta && !meta.image && CFG.PNG_BASE_CID)         meta.image = `ipfs://${CFG.PNG_BASE_CID}/${id}.png`;
   if (meta && !meta.animation_url && CFG.MP4_BASE_CID) meta.animation_url = `ipfs://${CFG.MP4_BASE_CID}/${id}.mp4`;
 
-  // 5) Nichts gefunden → Meldung
   if (!meta) {
     $("uriStatus").textContent = "⚠️ Metadaten nicht gefunden";
-    media.textContent = "—";
-    previewReady = false;
-    applyMintButtonState();
-    return;
+    media.textContent = "—"; previewReady = false; applyMintButtonState(); return;
   }
 
-  // 6) Rendern + Cache
   previewCache[id] = meta;
   renderPreview(id, meta);
-  previewReady = true;
-  applyMintButtonState();
+  previewReady = true; applyMintButtonState();
 }
 
 function renderPreview(id, meta){
