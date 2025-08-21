@@ -72,6 +72,7 @@ import {
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
 /* ==================== METAPLEX TOKEN METADATA (ESM v2.x) ==================== */
+let IS_SIZED_COLLECTION = false;
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
@@ -536,7 +537,16 @@ async function fetchAccountInfo(conn, pubkey){
 }
 async function collectionPreflight(conn, payerPk, collectionMintPk){
   await ensureTM();
+    let md;
+  try { md = tmDeserializeMetadata(mdAcc.data); } catch {}
 
+  const name  = stripNulls(md?.data?.name)   || "(unbekannt)";
+  const sym   = stripNulls(md?.data?.symbol) || "";
+  const uri   = stripNulls(md?.data?.uri)    || "";
+
+  // NEU: sized-Flag erkennen
+  IS_SIZED_COLLECTION = !!md?.collectionDetails;
+  log("collection: ok", { name, symbol: sym, uri, sized: IS_SIZED_COLLECTION });
   const mdPda = findMetadataPda(collectionMintPk);
   const edPda = findMasterEditionPda(collectionMintPk);
 
