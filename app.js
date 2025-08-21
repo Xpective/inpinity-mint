@@ -29,6 +29,9 @@ const CFG = {
   PNG_BASE_CID:  "bafybeicbxxwossaiogadmonclbijyvuhvtybp7lr5ltnotnqqezamubcr4",
   MP4_BASE_CID:  "",
 
+  // Collection.json (Fallback-CID)
+  COLLECTION_JSON_CID: "bafkreigbjzbd4nba6yzkdvwhmkj4g3poglujachjxqznbyqfn55anlbcua",
+
   GATEWAYS: [
     "https://ipfs.io/ipfs",
     "https://ipfs.inpinity.online/ipfs",
@@ -73,29 +76,37 @@ let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
-/* small utils */
+/* ---- utils for module introspection / picking ---- */
 function getPath(obj, path) { return path.split(".").reduce((o,k)=>o?.[k], obj); }
-function pick(obj, pathList, type = "function") {
-  for (const p of pathList) {
-    const v = getPath(obj, p);
-    if ((type === "function" && typeof v === "function") ||
-        (type === "object"   && typeof v === "object" && v)) {
-      return v;
-    }
+function pickFrom(mod, paths, kind="function") {
+  for (const p of paths) {
+    const v = getPath(mod, p);
+    if ((kind==="function" && typeof v==="function") || (kind==="object" && v && typeof v==="object")) return v;
   }
   return null;
 }
-function logModuleShapeOnce(mod) {
-  if (logModuleShapeOnce._done) return;
-  try {
-    const top = Object.keys(mod || {});
+function dumpTmShape(mod){
+  try{
+    const top = Object.keys(mod||{});
     const ns = {};
-    ["instructions","builders","generated","accounts","constants"].forEach(k=>{
-      const v = mod?.[k]; if (v && typeof v === "object") ns[k]=Object.keys(v);
+    ["instructions","builders","generated","accounts","constants","programs","types"].forEach(k=>{
+      const v = mod?.[k]; if (v && typeof v==="object") ns[k]=Object.keys(v);
     });
-    console.warn("[mpl-token-metadata] shape", { top, ns });
-  } catch {}
-  logModuleShapeOnce._done = true;
+    console.log("[mpl-token-metadata] shape", { top, ns, hints:{
+      hasCreateV3: !!pickFrom(mod, [
+        "createCreateMetadataAccountV3Instruction",
+        "instructions.createCreateMetadataAccountV3Instruction",
+        "builders.createMetadataAccountV3",
+        "generated.createMetadataAccountV3",
+      ]),
+      hasCreateV2: !!pickFrom(mod, [
+        "createCreateMetadataAccountV2Instruction",
+        "instructions.createCreateMetadataAccountV2Instruction",
+        "builders.createMetadataAccountV2",
+        "generated.createMetadataAccountV2",
+      ])
+    }});
+  }catch{}
 }
 
 async function loadTM() {
@@ -110,6 +121,8 @@ async function loadTM() {
     try {
       const mod = await import(/* @vite-ignore */ url);
       TM = (mod && typeof mod.default === "object") ? mod.default : mod;
+
+      dumpTmShape(TM);
 
       const pidRaw =
            TM?.PROGRAM_ID
@@ -146,139 +159,69 @@ function getTokenMetadataProgramId() {
   return TOKEN_METADATA_PROGRAM_ID;
 }
 
-/* ======= Wrapper: berücksichtigt mehrere Namensvarianten ======= */
+/* ---- Thin wrappers that adapt to multiple bundle shapes ---- */
 function tmCreateMetadataInstr(accounts, dataV2Like) {
-  // Varianten mit & ohne doppeltes "Create"
-  const fn = pick(TM, [
-    // with double "Create"
+  const fnV3 = pickFrom(TM, [
     "createCreateMetadataAccountV3Instruction",
-    "createCreateMetadataAccountV2Instruction",
     "instructions.createCreateMetadataAccountV3Instruction",
-    "instructions.createCreateMetadataAccountV2Instruction",
-    "builders.createCreateMetadataAccountV3Instruction",
-    "builders.createCreateMetadataAccountV2Instruction",
-    "generated.createCreateMetadataAccountV3Instruction",
-    "generated.createCreateMetadataAccountV2Instruction",
-    // single "Create"
-    "createMetadataAccountV3Instruction",
-    "createMetadataAccountV2Instruction",
-    "instructions.createMetadataAccountV3Instruction",
-    "instructions.createMetadataAccountV2Instruction",
-    "builders.createMetadataAccountV3Instruction",
-    "builders.createMetadataAccountV2Instruction",
-    "generated.createMetadataAccountV3Instruction",
-    "generated.createMetadataAccountV2Instruction",
-    // builder returning ix
-    "createMetadataAccountV3",
-    "instructions.createMetadataAccountV3",
     "builders.createMetadataAccountV3",
-    "generated.createMetadataAccountV3",
-  ], "function");
+    "generated.createMetadataAccountV3"
+  ]);
+  const fnV2 = pickFrom(TM, [
+    "createCreateMetadataAccountV2Instruction",
+    "instructions.createCreateMetadataAccountV2Instruction",
+    "builders.createMetadataAccountV2",
+    "generated.createMetadataAccountV2"
+  ]);
+  if (!fnV3 && !fnV2) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
 
-  if (!fn) {
-    logModuleShapeOnce(TM);
-    throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
-  }
-
-  // Erkennen, ob V3-Args oder V2-Args gebraucht werden
-  const takesV3 =
-       !!pick(TM, [
-         "createCreateMetadataAccountV3Instruction",
-         "instructions.createCreateMetadataAccountV3Instruction",
-         "builders.createCreateMetadataAccountV3Instruction",
-         "generated.createCreateMetadataAccountV3Instruction",
-         "createMetadataAccountV3Instruction",
-         "instructions.createMetadataAccountV3Instruction",
-         "builders.createMetadataAccountV3Instruction",
-         "generated.createMetadataAccountV3Instruction",
-         "createMetadataAccountV3",
-         "instructions.createMetadataAccountV3",
-         "builders.createMetadataAccountV3",
-         "generated.createMetadataAccountV3",
-       ], "function");
-
-  const arg = takesV3
-    ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
-    : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
-
-  try {
-    return fn(accounts, arg);
-  } catch {
-    // manche Builder-Varianten haben Signatur (accounts, args, programId?)
-    return fn(accounts, arg, getTokenMetadataProgramId());
+  if (fnV3) {
+    const args = { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } };
+    try { return fnV3(accounts, args); } catch { return fnV3(accounts, args, getTokenMetadataProgramId()); }
+  } else {
+    const args = { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
+    try { return fnV2(accounts, args); } catch { return fnV2(accounts, args, getTokenMetadataProgramId()); }
   }
 }
 function tmMasterEditionV3Instr(accounts, args) {
-  const fn = pick(TM, [
+  const fn = pickFrom(TM, [
     "createCreateMasterEditionV3Instruction",
     "instructions.createCreateMasterEditionV3Instruction",
-    "builders.createCreateMasterEditionV3Instruction",
-    "generated.createCreateMasterEditionV3Instruction",
-    "createMasterEditionV3Instruction",
-    "instructions.createMasterEditionV3Instruction",
-    "builders.createMasterEditionV3Instruction",
-    "generated.createMasterEditionV3Instruction",
-    "createMasterEditionV3",
-    "instructions.createMasterEditionV3",
     "builders.createMasterEditionV3",
-    "generated.createMasterEditionV3",
-  ], "function");
-  if (!fn) { logModuleShapeOnce(TM); throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar"); }
-  try {
-    return fn(accounts, args);
-  } catch {
-    return fn(accounts, args, getTokenMetadataProgramId());
-  }
+    "generated.createMasterEditionV3"
+  ]);
+  if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
+  try { return fn(accounts, args); } catch { return fn(accounts, args, getTokenMetadataProgramId()); }
 }
 function tmVerifyCollectionInstr(obj) {
-  const fn = pick(TM, [
+  const fn = pickFrom(TM, [
     "createSetAndVerifyCollectionInstruction",
-    "createVerifyCollectionInstruction",
     "instructions.createSetAndVerifyCollectionInstruction",
+    "builders.setAndVerifyCollection",
+    "generated.setAndVerifyCollection",
+    "createVerifyCollectionInstruction",
     "instructions.createVerifyCollectionInstruction",
-    "builders.createSetAndVerifyCollectionInstruction",
-    "builders.createVerifyCollectionInstruction",
-    "generated.createSetAndVerifyCollectionInstruction",
-    "generated.createVerifyCollectionInstruction",
-    "setAndVerifyCollection",
-    "verifyCollection",
-  ], "function");
+    "builders.verifyCollection",
+    "generated.verifyCollection"
+  ]);
   if (!fn) return null;
-  try {
-    return fn(obj);
-  } catch {
-    return fn(obj, getTokenMetadataProgramId());
-  }
+  try { return fn(obj); } catch { return fn(obj, getTokenMetadataProgramId()); }
 }
 function tmUpdateMetadataV2Instr(accounts, args) {
-  const fn = pick(TM, [
+  const fn = pickFrom(TM, [
     "createUpdateMetadataAccountV2Instruction",
     "instructions.createUpdateMetadataAccountV2Instruction",
-    "builders.createUpdateMetadataAccountV2Instruction",
-    "generated.createUpdateMetadataAccountV2Instruction",
-    "updateMetadataAccountV2Instruction",
-    "instructions.updateMetadataAccountV2Instruction",
-    "builders.updateMetadataAccountV2Instruction",
-    "generated.updateMetadataAccountV2Instruction",
-    "updateMetadataAccountV2",
-  ], "function");
-  if (!fn) { logModuleShapeOnce(TM); throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar"); }
-  const argWrapped = { updateMetadataAccountArgsV2: args };
-  try {
-    return fn(accounts, argWrapped);
-  } catch {
-    return fn(accounts, argWrapped, getTokenMetadataProgramId());
-  }
+    "builders.updateMetadataAccountV2",
+    "generated.updateMetadataAccountV2"
+  ]);
+  if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
+  const wrapped = { updateMetadataAccountArgsV2: args };
+  try { return fn(accounts, wrapped); } catch { return fn(accounts, wrapped, getTokenMetadataProgramId()); }
 }
 function tmDeserializeMetadata(data) {
-  const Meta = pick(TM, [
-    "Metadata",
-    "accounts.Metadata",
-    "generated.Metadata"
-  ], "object");
+  const Meta = pickFrom(TM, ["Metadata","accounts.Metadata","generated.Metadata"], "object");
   if (Meta?.deserialize) return Meta.deserialize(data)[0];
   if (Meta?.fromAccountInfo) return Meta.fromAccountInfo({ data })[0];
-  logModuleShapeOnce(TM);
   throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
 }
 
@@ -341,7 +284,31 @@ const toHttp = (u)=>{
   return u;
 };
 const uriForId = (id)=>`ipfs://${CFG.JSON_BASE_CID}/${id}.json`;
-const desiredName = (id)=>`Pi Pyramid #${id}`;
+const desiredName = (id) => `Pi Pyramid #${id}`;
+
+/* ---- IPFS helpers for collection.json fallback ---- */
+function ipfsToHttp(u) {
+  if (!u) return u;
+  if (u.startsWith("ipfs://")) return `${CFG.GATEWAYS[0]}/${u.slice("ipfs://".length).replace(/^ipfs\//,"")}`;
+  if (u.startsWith("/ipfs/"))   return `${CFG.GATEWAYS[0]}${u}`;
+  return u;
+}
+function collectionCidHttpCandidates() {
+  const path = `${CFG.COLLECTION_JSON_CID}`;
+  return [
+    ...CFG.GATEWAYS.map(g => `${g}/${path}`),
+    ...CFG.GATEWAYS.map(g => `${g}/${path}/collection.json`)
+  ];
+}
+async function fetchJsonMaybe(uri) {
+  try {
+    if (!uri) return null;
+    const u = (uri.startsWith("ipfs://") || uri.startsWith("/ipfs/")) ? ipfsToHttp(uri) : uri;
+    const r = await fetch(u, { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.json().catch(()=>null);
+  } catch { return null; }
+}
 
 /* ==================== STATE ==================== */
 let connection=null, phantom=null, originalBtnText="";
@@ -622,6 +589,23 @@ async function collectionPreflight(conn, payerPk, collectionMintPk){
 
   log("collection: ok", { name, symbol: sym, uri });
 
+  // ---- zusätzliche Einsicht: collection.json laden (on-chain oder Fallback-CID) ----
+  let cj = await fetchJsonMaybe(uri);
+  if (!cj && CFG.COLLECTION_JSON_CID) {
+    for (const cand of collectionCidHttpCandidates()) {
+      try {
+        const r = await fetch(cand, { cache: "no-store" });
+        if (r.ok) { cj = await r.json().catch(()=>null); }
+      } catch {}
+      if (cj) { console.log("[collection json fallback]", { url: cand, name: cj.name||"", symbol: cj.symbol||"" }); break; }
+    }
+  }
+  if (cj) {
+    console.log("[collection json]", { name: cj.name||"", symbol: cj.symbol||"", uri: uri || `(cid:${CFG.COLLECTION_JSON_CID})` });
+  } else {
+    console.warn("[collection json] nicht ladbar – weder on-chain URI noch CID-Fallback ergab verwertbare JSON.");
+  }
+
   return { mdPda, edPda, name, symbol: sym, uri };
 }
 async function softAssertCollection(conn, collectionMintPk){
@@ -707,7 +691,7 @@ async function findExistingMintByIdForCreator(conn, id){
 function buildDesiredDataV2(id){
   return {
     name:  desiredName(id),
-    symbol:"InPi",
+    symbol:"inpi",
     uri:   uriForId(id),
     sellerFeeBasisPoints: CFG.ROYALTY_BPS,
     creators:[{ address:new PublicKey(CFG.CREATOR), verified:true, share:100 }],
@@ -836,7 +820,7 @@ async function doMint(){
     const cmInstr = tmCreateMetadataInstr(
       { metadata:metadataPda, mint, mintAuthority:payer, payer, updateAuthority:payer },
       {
-        name:nftName, symbol:"InPi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
+        name:nftName, symbol:"inpi", uri:nftUri, sellerFeeBasisPoints:CFG.ROYALTY_BPS,
         creators:[{ address:creatorPk, verified:isSelf, share:100 }],
         collection:{ key:collectionMint, verified:false },
         uses:null
