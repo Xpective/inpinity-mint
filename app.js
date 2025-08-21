@@ -600,36 +600,74 @@ async function setSmartPriority(tx, conn){
 }
 
 /* ==================== Sign & Send ==================== */
-async function signSendWithRetry(conn, tx, wallet, extraSigner){
+/* === Helper: Transaktion mit frischem Blockhash vorbereiten === */
+function cloneTxWithBlockhash(srcTx, recentBlockhash, feePayer, extraSigner) {
+  // Neu initialisieren (sauber, ohne side effects)
+  const tx = new Transaction();
+  tx.feePayer = feePayer;
+  tx.recentBlockhash = recentBlockhash;
+
+  // alle Instruktionen übernehmen (in gleicher Reihenfolge)
+  for (const ix of srcTx.instructions) tx.add(ix);
+
+  // ggf. den neuen Mint-Schlüssel wieder teil-signieren
   if (extraSigner) tx.partialSign(extraSigner);
+  return tx;
+}
+
+/* === Robuster Send mit Blockhash-Rotation & besserem Logging === */
+async function signSendWithRetry(conn, builtTx, wallet, extraSigner){
+  // wir versuchen ein paarmal mit frischem Blockhash
   for (let attempt=0; attempt<3; attempt++){
-    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash({ commitment: "processed" });
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = wallet.publicKey;
+    // 1) frischen Blockhash holen
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('processed');
 
-    const signed = await wallet.signTransaction(tx);
+    // 2) Transaktion sauber neu aufsetzen (Clone) + ggf. partialSign
+    let tx = cloneTxWithBlockhash(builtTx, blockhash, wallet.publicKey, extraSigner);
 
-    // Manche Wallets strippen recentBlockhash – sicherheitshalber erneut setzen:
-    if (!signed.recentBlockhash) signed.recentBlockhash = blockhash;
+    // 3) Simulation (holt oft nützliche Logs bei Fehlern)
+    try {
+      const sim = await conn.simulateTransaction(tx, { sigVerify:false, commitment:"processed" });
+      if (sim?.value?.logs?.length) log("simulate logs", sim.value.logs);
+      if (sim?.value?.err) {
+        throw new Error("Simulation fehlgeschlagen: " + JSON.stringify(sim.value.err));
+      }
+    } catch (e) {
+      // bei Sim-Fehlern trotzdem versuchen zu senden – aber klar loggen
+      log("simulate error", String(e?.message||e));
+    }
 
-    const sim = await conn.simulateTransaction(signed, { sigVerify: false, commitment: "processed" });
-    if (sim?.value?.logs) log("simulate logs", sim.value.logs);
-    if (sim?.value?.err) throw new Error("Simulation fehlgeschlagen. Prüfe Collection-Authority/PDAs/URI.");
+    // 4) Wallet signieren lassen
+    let signed;
+    try {
+      signed = await wallet.signTransaction(tx);
+    } catch (e) {
+      // typischer User-Abbruch oder Signing-Fehler
+      throw new Error(e?.message || "Signierung abgebrochen/fehlgeschlagen");
+    }
 
+    // 5) Senden + Bestätigen
     try{
-      const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: false, maxRetries: 3 });
-      await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+      const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight:false, preflightCommitment:"confirmed" });
+      await conn.confirmTransaction({ signature:sig, blockhash, lastValidBlockHeight }, "confirmed");
       return sig;
-    }catch(e){
+    } catch (e) {
       const msg = e?.message || "";
-      if (/BlockhashNotFound|expired|blockheight exceeded/i.test(msg)){
-        log("Blockhash abgelaufen – retry",{attempt:attempt+1});
+      // Abgelaufener Blockhash? -> nächster Versuch mit neuem Hash
+      if (/BlockhashNotFound|expired|block height exceeded/i.test(msg)) {
+        log("blockhash expired – retry", { attempt: attempt+1, err: msg });
         continue;
       }
-      throw e;
+      // Wenn Node „Transaction recentBlockhash required“ meldet → harter Fix:
+      if (/recentBlockhash required/i.test(msg)) {
+        log("recentBlockhash required – retry with fresh hash", { attempt: attempt+1 });
+        continue;
+      }
+      // alles andere: rauswerfen
+      throw new Error(msg || "Senden fehlgeschlagen");
     }
   }
-  throw new Error("Blockhash wiederholt abgelaufen. Bitte erneut versuchen.");
+  throw new Error("Blockhash wiederholt abgelaufen oder nicht akzeptiert – bitte erneut versuchen.");
 }
 
 /* ==================== REPAIR / helpers ==================== */
