@@ -9,11 +9,13 @@ export interface Env {
   ALLOWED_ORIGINS?: string;
   ALLOWED_HEADERS?: string;
 
-  CLAIMS: KVNamespace;
+  CLAIMS: KVNamespace;           // Claims + Mint-Registry (mit Prefixen)
   REMOTE_CLAIMS_URL?: string;
 
   CREATOR_PUBKEY?: string;
   MAX_INDEX?: string;
+
+  VENDOR: KVNamespace;           // Vendor-Bundles (JS/IIFE) Caching
 }
 
 /* ========================= CORS helpers ========================= */
@@ -22,7 +24,7 @@ const parseList = (s?: string) => (s || '').split(',').map(x => x.trim()).filter
 function pickOrigin(req: Request, allow: string[]) {
   const o = req.headers.get('Origin') || '';
   if (!allow.length) return '*';
-  const isAllowed = allow.some(a => {
+  const ok = allow.some(a => {
     if (a === '*') return true;
     if (a.includes('*')) {
       const re = new RegExp('^' + a.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
@@ -30,10 +32,10 @@ function pickOrigin(req: Request, allow: string[]) {
     }
     return a === o;
   });
-  return isAllowed ? (o || allow[0]) : (allow[0] || '*');
+  return ok ? (o || allow[0]) : (allow[0] || '*');
 }
 
-function corsHeaders(origin: string, ctype = 'application/json', extra?: Record<string, string>) {
+function baseCorsHeaders(origin: string, ctype = 'application/json', extra?: Record<string, string>) {
   return {
     'Content-Type': ctype,
     'Access-Control-Allow-Origin': origin,
@@ -45,19 +47,19 @@ function corsHeaders(origin: string, ctype = 'application/json', extra?: Record<
   };
 }
 
-const json = (data: unknown, origin: string, status = 200, extraHdr?: Record<string, string>) =>
-  new Response(JSON.stringify(data), { status, headers: corsHeaders(origin, 'application/json', extraHdr) });
-
-const text = (msg: string, origin: string, status = 200, extraHdr?: Record<string, string>) =>
-  new Response(msg, { status, headers: corsHeaders(origin, 'text/plain', extraHdr) });
+/* ========================= JSON helpers ========================= */
+const MAX_BODY_BYTES = 512 * 1024;
+async function readJsonSafe<T = any>(req: Request): Promise<T> {
+  const len = Number(req.headers.get('content-length') || 0);
+  if (len && len > MAX_BODY_BYTES) throw new Error('Payload too large');
+  return req.json() as Promise<T>;
+}
 
 /* ========================= RPC forward ========================= */
 const isRetryable = (s: number) => s === 403 || s === 429 || (s >= 500 && s <= 599);
-
 async function rpcOnce(endpoint: string, body: unknown): Promise<Response> {
   return fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 }
-
 async function rpcForward(env: Env, body: unknown): Promise<Response> {
   try {
     const r = await rpcOnce(env.UPSTREAM_RPC, body);
@@ -107,22 +109,11 @@ async function getClaims(env: Env): Promise<number[]> {
   } catch {}
   return [];
 }
-
 async function saveClaims(env: Env, arr: number[]) { await env.CLAIMS.put('claimed', JSON.stringify(arr)); }
-
 async function addClaim(env: Env, idx: number): Promise<'created' | 'exists'> {
   const arr = await getClaims(env);
   if (arr.includes(idx)) return 'exists';
   arr.push(idx); await saveClaims(env, arr); return 'created';
-}
-
-/* ========================= Body guard ========================= */
-const MAX_BODY_BYTES = 512 * 1024;
-
-async function readJsonSafe<T = any>(req: Request): Promise<T> {
-  const len = Number(req.headers.get('content-length') || 0);
-  if (len && len > MAX_BODY_BYTES) throw new Error('Payload too large');
-  return req.json() as Promise<T>;
 }
 
 /* ========================= Vendor helper ========================= */
@@ -134,6 +125,113 @@ async function fetchCached(url: string): Promise<ArrayBuffer | null> {
   } catch { return null; }
 }
 
+async function serveVendorFromKV(env: Env, key: string, candidates: string[], origin: string): Promise<Response> {
+  const cached = await env.VENDOR.get(key, { type: 'arrayBuffer' });
+  if (cached) {
+    return new Response(cached, {
+      status: 200,
+      headers: baseCorsHeaders(origin, 'application/javascript', {
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Vendor-Source': `kv:${key}`
+      })
+    });
+  }
+  const errors: string[] = [];
+  for (const url of candidates) {
+    try {
+      const body = await fetchCached(url);
+      if (body) {
+        await env.VENDOR.put(key, body as any);
+        return new Response(body, {
+          status: 200,
+          headers: baseCorsHeaders(origin, 'application/javascript', {
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'X-Vendor-Source': url
+          })
+        });
+      } else {
+        errors.push(`MISS ${url}`);
+      }
+    } catch (e: any) {
+      errors.push(`ERR ${url} :: ${String(e?.message || e)}`);
+    }
+  }
+  return new Response('vendor fetch failed', {
+    status: 502,
+    headers: { ...baseCorsHeaders(origin, 'text/plain'), 'X-Vendor-Errors': errors.slice(0, 12).join(' | ') }
+  });
+}
+
+/* ========================= Mint Registry (CLAIMS KV Prefixe) ========================= */
+type MintItem = {
+  id: number;
+  mint: string;
+  wallet: string;
+  sig: string;
+  ts: number;
+  collection?: string;
+  name?: string;
+  uri?: string;
+};
+
+const PFX_MINT_ID   = 'mint:id:';      // 1 Datensatz je Token-ID
+const PFX_WAL       = 'mint:wal:';     // Zeitreihe pro Wallet: mint:wal:<wallet>:<ts>
+const KEY_MINT_COUNT = 'mint_count';   // Zähler
+
+async function putMint(env: Env, it: MintItem) {
+  // Vollobjekt für Nachschlagen per ID
+  await env.CLAIMS.put(PFX_MINT_ID + it.id, JSON.stringify(it), {
+    expirationTtl: 60 * 60 * 24 * 365 * 10
+  });
+
+  // Zeitreihe pro Wallet
+  await env.CLAIMS.put(`${PFX_WAL}${it.wallet}:${it.ts}`, JSON.stringify({
+    id: it.id, mint: it.mint, sig: it.sig, ts: it.ts
+  }), { expirationTtl: 60 * 60 * 24 * 365 * 10 });
+
+  // Zähler
+  const cur = Number((await env.CLAIMS.get(KEY_MINT_COUNT)) || '0');
+  await env.CLAIMS.put(KEY_MINT_COUNT, String(cur + 1));
+}
+
+  // Kompakter Zeiteintrag pro Wallet (für schnelle "by-wallet"-Listen)
+  const compact = { id: it.id, mint: it.mint, sig: it.sig, ts: it.ts, collection: it.collection, name: it.name, uri: it.uri };
+  await env.CLAIMS.put(`${PFX_WAL}${it.wallet}:${it.ts}`, JSON.stringify(compact), {
+    expirationTtl: 60 * 60 * 24 * 365 * 10
+  });
+
+  const cur = Number((await env.CLAIMS.get(KEY_MINT_COUNT)) || '0');
+  await env.CLAIMS.put(KEY_MINT_COUNT, String(cur + 1));
+}
+
+async function getMintById(env: Env, id: number): Promise<MintItem | null> {
+  const v = await env.CLAIMS.get(PFX_MINT_ID + id);
+  return v ? JSON.parse(v) as MintItem : null;
+}
+
+async function listByWallet(env: Env, wallet: string, limit = 10, cursor?: string) {
+  const res = await env.CLAIMS.list({ prefix: `${PFX_WAL}${wallet}:`, limit: Math.min(Math.max(limit, 1), 1000), cursor });
+  const items: Array<{ id: number; mint: string; sig: string; ts: number; collection?: string; name?: string; uri?: string }> = [];
+  for (const k of res.keys) {
+    const v = await env.CLAIMS.get(k.name);
+    if (!v) continue;
+    items.push(JSON.parse(v));
+  }
+  items.sort((a, b) => b.ts - a.ts);
+  return { items, cursor: res.cursor || null, list_complete: res.list_complete === true };
+}
+
+async function listMintsRecent(env: Env, limit = 50, cursor?: string) {
+  const page = await env.CLAIMS.list({ prefix: PFX_MINT_ID, limit: Math.min(Math.max(limit, 1), 1000), cursor });
+  const items: MintItem[] = [];
+  for (const k of page.keys) {
+    const v = await env.CLAIMS.get(k.name);
+    if (v) items.push(JSON.parse(v));
+  }
+  items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  return { items, cursor: page.cursor || null, list_complete: page.list_complete === true };
+}
+
 /* ========================= Worker ========================= */
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -141,13 +239,22 @@ export default {
     const allow = parseList(env.ALLOWED_ORIGINS) || [];
     const origin = pickOrigin(req, allow);
 
-    // Preflight
-    if (req.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
-    }
+    // CORS helpers (ALLOWED_HEADERS aus ENV respektieren)
+    const cors = (ctype = 'application/json', extra?: Record<string, string>) => {
+      const h = baseCorsHeaders(origin, ctype, extra);
+      if (env.ALLOWED_HEADERS) h['Access-Control-Allow-Headers'] = env.ALLOWED_HEADERS;
+      return h;
+    };
+    const json = (data: unknown, status = 200, extraHdr?: Record<string, string>) =>
+      new Response(JSON.stringify(data), { status, headers: cors('application/json', extraHdr) });
+    const text = (msg: string, status = 200, extraHdr?: Record<string, string>) =>
+      new Response(msg, { status, headers: cors('text/plain', extraHdr) });
 
-    // Health/Info
-    if (url.pathname === '/' || url.pathname === '/health') return text('OK: inpinity-rpc-proxy', origin);
+    // Preflight
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors() });
+
+    /* -------- Health/Config -------- */
+    if (url.pathname === '/' || url.pathname === '/health') return text('OK: inpi-proxy-nft');
     if (url.pathname === '/config') {
       return json({
         upstream: env.UPSTREAM_RPC,
@@ -155,77 +262,86 @@ export default {
         allowed_origins: env.ALLOWED_ORIGINS || '',
         creator: env.CREATOR_PUBKEY || null,
         max_index: Number(env.MAX_INDEX || '9999'),
-      }, origin);
+      });
     }
     if (url.pathname === '/debug') {
-      return json({ now: Date.now(), blockhash_cache: { value: _lastBlockhash, age_ms: Date.now() - _lastBlockTs } }, origin);
+      return json({ now: Date.now(), blockhash_cache: { value: _lastBlockhash, age_ms: Date.now() - _lastBlockTs } });
     }
 
-    /* -------- VENDOR: Metaplex mpl-token-metadata UMD -------- */
+    /* -------- Vendor: mpl-token-metadata -------- */
     if (url.pathname === '/vendor/mpl-token-metadata-umd.js') {
-      const sources = [
+      const candidates = [
         'https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js',
         'https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.js',
+        'https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js',
+        'https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/dist/index.umd.min.js',
+        'https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js',
+        'https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.4.0/umd/index.js',
+        // Fallback 3.3.x
+        'https://cdn.jsdelivr.net/npm/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js',
+        'https://unpkg.com/@metaplex-foundation/mpl-token-metadata@3.3.0/dist/index.umd.js',
       ];
-      for (const s of sources) {
-        const body = await fetchCached(s);
-        if (body) {
-          return new Response(body, {
-            status: 200,
-            headers: corsHeaders(origin, 'application/javascript', {
-              'Cache-Control': 'public, max-age=86400',
-              'X-Vendor-Source': s,
-            }),
-          });
-        }
-      }
-      return text('vendor fetch failed', origin, 502);
+      return serveVendorFromKV(env, 'mpl-token-metadata-umd.js', candidates, origin);
     }
+
+    /* -------- Vendor: web3.js (IIFE) -------- */
     if (url.pathname === '/vendor/web3js.js') {
-  const srcs = [
-    'https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js',
-    'https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.min.js',
-  ];
-  // ... analog zum vorhandenen vendor-Block
+      const candidates = [
+        'https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js',
+        'https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.min.js',
+        'https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.js',
+        'https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.js',
+      ];
+      return serveVendorFromKV(env, 'web3.iife.js', candidates, origin);
     }
+
+    /* -------- Vendor: spl-token (IIFE/UMD) -------- */
     if (url.pathname === '/vendor/spl-token.js') {
-      const srcs = [
+      const candidates = [
+        'https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.9/dist/index.iife.min.js',
+        'https://unpkg.com/@solana/spl-token@0.4.9/dist/index.iife.min.js',
         'https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.9/dist/index.iife.js',
         'https://unpkg.com/@solana/spl-token@0.4.9/dist/index.iife.js',
+        // Fallbacks
+        'https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.3/dist/index.iife.min.js',
+        'https://unpkg.com/@solana/spl-token@0.4.3/dist/index.iife.min.js',
+        'https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.9/umd/index.min.js',
+        'https://unpkg.com/@solana/spl-token@0.4.9/umd/index.min.js',
       ];
-      // ... analog
+      return serveVendorFromKV(env, 'spl-token.iife.js', candidates, origin);
     }
+
     /* -------- JSON-RPC proxy -------- */
     if (url.pathname === '/rpc' && req.method === 'POST') {
       let body: any;
-      try { body = await readJsonSafe(req); } catch { return text('Bad JSON or too large', origin, 400); }
+      try { body = await readJsonSafe(req); } catch { return text('Bad JSON or too large', 400); }
       const resp = await rpcForward(env, body);
       const data = await resp.text();
-      return new Response(data, { status: resp.status, headers: corsHeaders(origin, 'application/json') });
+      return new Response(data, { status: resp.status, headers: cors('application/json') });
     }
 
     /* -------- latest-blockhash -------- */
     if (url.pathname === '/latest-blockhash' && req.method === 'GET') {
-      try { return json({ blockhash: await getLatestBlockhash(env) }, origin); }
-      catch (e: any) { return json({ error: String(e?.message || e) }, origin, 502); }
+      try { return json({ blockhash: await getLatestBlockhash(env) }); }
+      catch (e: any) { return json({ error: String(e?.message || e) }, 502); }
     }
 
-    /* -------- simulate -------- */
+    /* -------- simulate (optional, nützlich fürs Debuggen) -------- */
     if (url.pathname === '/simulate' && req.method === 'POST') {
       type SimReq = { tx: string; sigVerify?: boolean; replaceRecentBlockhash?: boolean; };
       let body: SimReq;
-      try { body = await readJsonSafe<SimReq>(req); } catch { return text('Bad JSON or too large', origin, 400); }
-      if (!body?.tx) return text('Missing tx (base64)', origin, 400);
+      try { body = await readJsonSafe<SimReq>(req); } catch { return text('Bad JSON or too large', 400); }
+      if (!body?.tx) return text('Missing tx (base64)', 400);
       const rpcBody = {
         jsonrpc: '2.0', id: 1, method: 'simulateTransaction',
         params: [body.tx, { sigVerify: !!body.sigVerify, replaceRecentBlockhash: body.replaceRecentBlockhash !== false, commitment: 'processed' }]
       };
       const r = await rpcForward(env, rpcBody);
       const data = await r.text();
-      return new Response(data, { status: r.status, headers: corsHeaders(origin, 'application/json') });
+      return new Response(data, { status: r.status, headers: cors('application/json') });
     }
 
-    /* -------- relay -------- */
+    /* -------- relay (optional) -------- */
     if (url.pathname === '/relay' && req.method === 'POST') {
       type RelayReq = {
         tx: string; skipPreflight?: boolean; maxRetries?: number;
@@ -234,14 +350,14 @@ export default {
         requireCreator?: boolean; signer?: string;
       };
       let body: RelayReq;
-      try { body = await readJsonSafe<RelayReq>(req); } catch { return text('Bad JSON or too large', origin, 400); }
-      if (!body?.tx) return text('Missing tx (base64)', origin, 400);
+      try { body = await readJsonSafe<RelayReq>(req); } catch { return text('Bad JSON or too large', 400); }
+      if (!body?.tx) return text('Missing tx (base64)', 400);
 
       if (body.requireCreator) {
         const need = (env.CREATOR_PUBKEY || '').trim();
         const got  = (body.signer || '').trim();
-        if (!need) return text('CREATOR_PUBKEY not configured', origin, 412);
-        if (!got || got !== need) return text('Forbidden: signer is not creator', origin, 403);
+        if (!need) return text('CREATOR_PUBKEY not configured', 412);
+        if (!got || got !== need) return text('Forbidden: signer is not creator', 403);
       }
 
       const sendBody = {
@@ -251,7 +367,7 @@ export default {
       const sendResp = await rpcForward(env, sendBody);
       const sendJson = await sendResp.json().catch(() => ({}));
       if (!sendResp.ok || (sendJson as any)?.error) {
-        return json({ error: (sendJson as any)?.error || `sendRawTransaction failed ${sendResp.status}` }, origin, 502);
+        return json({ error: (sendJson as any)?.error || `sendRawTransaction failed ${sendResp.status}` }, 502);
       }
       const signature = (sendJson as any)?.result;
 
@@ -260,28 +376,28 @@ export default {
         const confBody = { jsonrpc: '2.0', id: 1, method: 'confirmTransaction', params: [ { signature, ...(bh ? { blockhash: bh } : {}) }, body.confirmCommitment || 'confirmed' ] };
         const confResp = await rpcForward(env, confBody);
         const confJson = await confResp.json().catch(() => ({}));
-        return json({ signature, confirm: (confJson as any)?.result ?? null }, origin);
+        return json({ signature, confirm: (confJson as any)?.result ?? null });
       }
-      return json({ signature }, origin);
+      return json({ signature });
     }
 
     /* -------- claims -------- */
     if (url.pathname === '/claims') {
-      if (req.method === 'HEAD') return new Response(null, { status: 200, headers: corsHeaders(origin) });
+      if (req.method === 'HEAD') return new Response(null, { status: 200, headers: cors() });
       if (req.method === 'GET') {
         const claimed = await getClaims(env);
         const tag = `W/"c${claimed.length}-${claimed[0] ?? -1}-${claimed[claimed.length-1] ?? -1}"`;
-        return new Response(JSON.stringify({ claimed }), { status: 200, headers: corsHeaders(origin, 'application/json', { ETag: tag }) });
+        return new Response(JSON.stringify({ claimed }), { status: 200, headers: cors('application/json', { ETag: tag }) });
       }
       if (req.method === 'POST') {
         try {
           const { index } = await readJsonSafe<{ index?: unknown }>(req);
-          if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return text('Invalid index', origin, 400);
+          if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return text('Invalid index', 400);
           const res = await addClaim(env, index);
-          return res === 'exists' ? json({ error: 'already claimed' }, origin, 409) : json({ ok: true }, origin);
-        } catch { return text('Bad JSON or too large', origin, 400); }
+          return res === 'exists' ? json({ error: 'already claimed' }, 409) : json({ ok: true });
+        } catch { return text('Bad JSON or too large', 400); }
       }
-      return text('Method not allowed', origin, 405);
+      return text('Method not allowed', 405);
     }
 
     if (url.pathname === '/claims/stats' && req.method === 'GET') {
@@ -289,7 +405,7 @@ export default {
       const claimed = await getClaims(env);
       const set = new Set<number>(claimed);
       const freeCount = (max + 1) - set.size;
-      return json({ max_index: max, claimed_count: set.size, free_count: freeCount }, origin);
+      return json({ max_index: max, claimed_count: set.size, free_count: freeCount });
     }
 
     if (url.pathname === '/claims/free' && req.method === 'GET') {
@@ -297,10 +413,60 @@ export default {
       const claimed = new Set<number>(await getClaims(env));
       const free: number[] = [];
       for (let i = 0; i <= max; i++) if (!claimed.has(i)) free.push(i);
-      return json({ free }, origin);
+      return json({ free });
+    }
+
+    /* -------- Mint Registry -------- */
+    if (url.pathname === '/mints' && req.method === 'POST') {
+      type Body = { id?: unknown; mint?: unknown; wallet?: unknown; sig?: unknown; collection?: unknown; name?: unknown; uri?: unknown };
+      let body: Body;
+      try { body = await readJsonSafe<Body>(req); } catch { return text('Bad JSON or too large', 400); }
+
+      const id = Number(body.id);
+      const mint = String(body.mint || '').trim();
+      const wallet = String(body.wallet || '').trim();
+      const sig = String(body.sig || '').trim();
+      const collection = String((body.collection ?? '') as string).trim();
+      const name = String((body.name ?? '') as string).trim();
+      const uri = String((body.uri ?? '') as string).trim();
+
+      if (!Number.isInteger(id) || id < 0) return json({ error: 'invalid id' }, 400);
+      if (!mint || !wallet || !sig) return json({ error: 'mint/wallet/sig required' }, 400);
+
+      const item: MintItem = { id, mint, wallet, sig, ts: Date.now(), collection, name, uri };
+      await putMint(env, item);
+      return json({ ok: true, item });
+    }
+
+    if (url.pathname === '/mints/by-id' && req.method === 'GET') {
+      const id = Number(url.searchParams.get('id') || '-1');
+      if (!Number.isInteger(id) || id < 0) return json({ error: 'invalid id' }, 400);
+      const item = await getMintById(env, id);
+      return item ? json({ item }) : json({ error: 'not found' }, 404);
+    }
+
+    if (url.pathname === '/mints/by-wallet' && req.method === 'GET') {
+      const wallet = String(url.searchParams.get('wallet') || '').trim();
+      const limit = Number(url.searchParams.get('limit') || '10');
+      const cursor = url.searchParams.get('cursor') || undefined;
+      if (!wallet) return json({ error: 'wallet required' }, 400);
+      const out = await listByWallet(env, wallet, limit, cursor);
+      return json(out);
+    }
+
+    if (url.pathname === '/mints' && req.method === 'GET') {
+      const limit = Number(url.searchParams.get('limit') || '50');
+      const cursor = url.searchParams.get('cursor') || undefined;
+      const out = await listMintsRecent(env, limit, cursor);
+      return json(out);
+    }
+
+    if (url.pathname === '/mints/count' && req.method === 'GET') {
+      const n = Number((await env.CLAIMS.get(KEY_MINT_COUNT)) || '0');
+      return json({ count: n });
     }
 
     // 404
-    return text('Not found', origin, 404);
+    return text('Not found', 404);
   }
 } satisfies ExportedHandler<Env>;
