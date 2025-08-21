@@ -854,8 +854,11 @@ async function doMint(){
       { createMasterEditionArgs: { maxSupply: 0 } }
     ));
 
-
-    
+    // --- 5) Mint-Authority revoken (wichtig: NACH MasterEdition)
+    tx.add(createSetAuthorityInstruction(
+      mint, payer, AuthorityType.MintTokens, null, []
+    ));
+    // FreezeAuthority NICHT anrühren (der zweite SetAuthority war die Quelle für "owner does not match").
 
     // --- 6) Collection verifizieren
     const collMdPda = findMetadataPda(collectionMint);
