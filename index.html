@@ -17,14 +17,23 @@
   <!-- EVM No-Op Shim: verhindert injected.bundle.js Fehler -->
   <!-- EVM No-Op Shim: verhindert Fehler von injected.bundle.js -->
 <script>
-  // Wir brauchen kein EVM in dieser App. Wenn ein Wallet irgendein halb-initialisiertes
-  // window.ethereum injiziert, verhindern wir, dass externe SDKs versuchen, damit zu arbeiten.
+  // Einige Browser-Extensions injizieren window.ethereum unvollständig.
+  // Für eine Solana-Dapp nicht nötig – Rausfiltern, um Konsole zu beruhigen.
   try {
     if (window.ethereum && typeof window.ethereum.initializeProvider !== "function") {
-      // Markiere als "nicht vorhanden", damit EVM-SDKs nicht initialisieren.
       Object.defineProperty(window, 'ethereum', { get() { return undefined; }, configurable: true });
     }
   } catch {}
+  // Fehler aus injected.bundle.js (EVM) unterdrücken – rein kosmetisch.
+  window.addEventListener('error', (ev) => {
+    try {
+      const msg = (ev?.filename || "") + (ev?.message || "");
+      if (/injected\.bundle\.js|initializeProvider/i.test(msg)) {
+        ev.preventDefault?.();
+        return false;
+      }
+    } catch {}
+  }, true);
 </script>
 </head>
 <body>
