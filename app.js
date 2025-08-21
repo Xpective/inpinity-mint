@@ -890,26 +890,19 @@ async function doMint(){
     // FreezeAuthority NICHT anrühren (der zweite SetAuthority war die Quelle für "owner does not match").
 
     // --- 6) Collection verifizieren
-    const collMdPda = findMetadataPda(collectionMint);
-    const collEdPda = findMasterEditionPda(collectionMint);
-    const verifyInstr = tmVerifyCollectionInstr({
-      metadata: metadataPda,
-      collectionAuthority: payer,
-      payer,
-      updateAuthority: payer,
-      collectionMint,
-      collection: collMdPda,
-      collectionMasterEditionAccount: collEdPda
-    });
-    if (verifyInstr) tx.add(verifyInstr);
-
-    // --- 7) Bei Fremd-Mint Update-Authority → CREATOR
-    if (!isSelf) {
-      tx.add(tmUpdateMetadataV2Instr(
-        { metadata: metadataPda, updateAuthority: payer },
-        { data: null, updateAuthority: creatorPk, primarySaleHappened: null, isMutable: true }
-      ));
-    }
+    // --- 6) Collection verifizieren
+const collMdPda = findMetadataPda(collectionMint);
+const collEdPda = findMasterEditionPda(collectionMint);
+const verifyInstr = tmVerifyCollectionInstrSmart({
+  metadata: metadataPda,
+  collectionAuthority: payer,
+  payer,
+  updateAuthority: payer,
+  collectionMint,
+  collection: collMdPda,
+  collectionMasterEditionAccount: collEdPda
+}, IS_SIZED_COLLECTION);
+if (verifyInstr) tx.add(verifyInstr);
 
     setStatus("Bitte im Wallet signieren…","info");
     const signature=await signSendWithRetry(conn, tx, wallet, mintKeypair);
