@@ -3,7 +3,7 @@
    =========================================== */
 
 /* ==================== BUILD-ID ==================== */
-const BUILD_TAG = "mint-v24";
+const BUILD_TAG = "mint-v25";
 
 /* ==================== KONFIG ==================== */
 const CFG = {
@@ -42,7 +42,7 @@ const CFG = {
   ]
 };
 
-/* === Mini-Config-Check (verhindert falsche Adressen) === */
+/* === Mini-Config-Check === */
 (function assertConfig(){
   const b58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
   if (!b58.test(CFG.CREATOR)) throw new Error("CFG.CREATOR ist keine Base58-Adresse.");
@@ -68,7 +68,7 @@ import {
   AuthorityType,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 
-/* ==================== METAPLEX TOKEN METADATA (ESM via esm.sh) ==================== */
+/* ==================== METAPLEX TOKEN METADATA (ESM) ==================== */
 let TM = null;
 let TOKEN_METADATA_PROGRAM_ID = null;
 const FALLBACK_TM_PID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
@@ -84,20 +84,7 @@ async function loadTM() {
       const mod = await import(/* @vite-ignore */ url);
       TM = mod;
 
-      // Kompatibel aliasen – egal ob unter "instructions" oder top-level exportiert
-      TM.createCreateMetadataAccountV2Instruction =
-        TM.createCreateMetadataAccountV2Instruction || TM.instructions?.createCreateMetadataAccountV2Instruction;
-      TM.createCreateMetadataAccountV3Instruction =
-        TM.createCreateMetadataAccountV3Instruction || TM.instructions?.createCreateMetadataAccountV3Instruction;
-      TM.createCreateMasterEditionV3Instruction =
-        TM.createCreateMasterEditionV3Instruction || TM.instructions?.createCreateMasterEditionV3Instruction;
-      TM.createUpdateMetadataAccountV2Instruction =
-        TM.createUpdateMetadataAccountV2Instruction || TM.instructions?.createUpdateMetadataAccountV2Instruction;
-      TM.createVerifyCollectionInstruction =
-        TM.createVerifyCollectionInstruction || TM.instructions?.createVerifyCollectionInstruction;
-      TM.createSetAndVerifyCollectionInstruction =
-        TM.createSetAndVerifyCollectionInstruction || TM.instructions?.createSetAndVerifyCollectionInstruction;
-
+      // Program-ID sicherstellen (nur lesen!)
       const pidStr =
         (TM.PROGRAM_ID && (TM.PROGRAM_ID.toString?.() ?? String(TM.PROGRAM_ID))) || FALLBACK_TM_PID;
       TOKEN_METADATA_PROGRAM_ID = new PublicKey(pidStr);
@@ -115,12 +102,10 @@ async function loadTM() {
   }
   throw lastErr || new Error("mpl-token-metadata konnte nicht geladen werden (ESM)");
 }
-
 async function ensureTM() {
   if (!TM || !TOKEN_METADATA_PROGRAM_ID) await loadTM();
   return TM;
 }
-
 function getTokenMetadataProgramId() {
   if (!TOKEN_METADATA_PROGRAM_ID) {
     throw new Error("Metaplex Program-ID noch nicht initialisiert – ensureTM() zuerst aufrufen");
@@ -128,43 +113,51 @@ function getTokenMetadataProgramId() {
   return TOKEN_METADATA_PROGRAM_ID;
 }
 
-/* ========== Thin compatibility wrappers (v2/v3) ========== */
+/* ========== Thin wrappers (lesen nur aus TM / TM.instructions) ========== */
 function tmCreateMetadataInstr(accounts, dataV2Like) {
   const fn =
-    TM.createCreateMetadataAccountV2Instruction
-    || TM.createCreateMetadataAccountV3Instruction;
+      TM?.createCreateMetadataAccountV2Instruction
+   || TM?.createCreateMetadataAccountV3Instruction
+   || TM?.instructions?.createCreateMetadataAccountV2Instruction
+   || TM?.instructions?.createCreateMetadataAccountV3Instruction;
   if (!fn) throw new Error("mpl-token-metadata: CreateMetadata (v2/v3) nicht verfügbar");
 
-  const isV3 = (fn?.name && fn.name.includes("V3"));
+  const isV3 =
+      (fn?.name?.includes?.("V3"))
+   || !!TM?.createCreateMetadataAccountV3Instruction
+   || !!TM?.instructions?.createCreateMetadataAccountV3Instruction;
+
   const arg = isV3
     ? { createMetadataAccountArgsV3: { data: dataV2Like, isMutable: true, collectionDetails: null } }
     : { createMetadataAccountArgsV2: { data: dataV2Like, isMutable: true } };
 
   return fn(accounts, arg);
 }
-
 function tmMasterEditionV3Instr(accounts, args) {
-  const fn = TM.createCreateMasterEditionV3Instruction;
+  const fn =
+      TM?.createCreateMasterEditionV3Instruction
+   || TM?.instructions?.createCreateMasterEditionV3Instruction;
   if (!fn) throw new Error("mpl-token-metadata: CreateMasterEditionV3 nicht verfügbar");
   return fn(accounts, args);
 }
-
 function tmVerifyCollectionInstr(obj) {
   const fn =
-    TM.createSetAndVerifyCollectionInstruction
-    || TM.createVerifyCollectionInstruction;
+      TM?.createSetAndVerifyCollectionInstruction
+   || TM?.createVerifyCollectionInstruction
+   || TM?.instructions?.createSetAndVerifyCollectionInstruction
+   || TM?.instructions?.createVerifyCollectionInstruction;
   return fn ? fn(obj) : null;
 }
-
 function tmUpdateMetadataV2Instr(accounts, args) {
-  const fn = TM.createUpdateMetadataAccountV2Instruction;
+  const fn =
+      TM?.createUpdateMetadataAccountV2Instruction
+   || TM?.instructions?.createUpdateMetadataAccountV2Instruction;
   if (!fn) throw new Error("mpl-token-metadata: UpdateMetadataAccountV2 nicht verfügbar");
   return fn(accounts, { updateMetadataAccountArgsV2: args });
 }
-
 function tmDeserializeMetadata(data) {
-  if (TM.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
-  if (TM.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
+  if (TM?.Metadata?.deserialize) return TM.Metadata.deserialize(data)[0];
+  if (TM?.Metadata?.fromAccountInfo) return TM.Metadata.fromAccountInfo({ data })[0];
   throw new Error("mpl-token-metadata: Metadata.deserialize nicht verfügbar");
 }
 
@@ -307,7 +300,6 @@ function updateEstimatedCost(){
 
 /* ==================== WALLET (Phantom) ==================== */
 function getPhantom() {
-  // Robust gegen verschiedene Inject-Varianten
   return (window.phantom && window.phantom.solana) ? window.phantom.solana : window.solana;
 }
 async function connectPhantom(){
